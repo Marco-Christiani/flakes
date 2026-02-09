@@ -6,15 +6,19 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
+  outputs = {
+    self,
+    nixpkgs,
+    flake-utils,
+  }:
+    flake-utils.lib.eachDefaultSystem (
+      system: let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
         };
 
-        cudaPackages = pkgs.cudaPackages;
+        inherit (pkgs) cudaPackages;
 
         commonBuildInputs = with pkgs; [
           cmake
@@ -42,7 +46,7 @@
 
         libraryPath = pkgs.lib.makeLibraryPath [
           cudaPackages.cudatoolkit
-          "${cudaPackages.cudatoolkit}/lib/stubs"  # libcuda.so stub
+          "${cudaPackages.cudatoolkit}/lib/stubs" # libcuda.so stub
           cudaPackages.cuda_cudart
           cudaPackages.cudnn
           (cudaPackages.libcutensor or cudaPackages.cutensor)
@@ -75,18 +79,7 @@
           echo "Rust: $(rustc --version)"
           echo "GCC: $(gcc --version | head -n1)"
         '';
-
-        pythonEnv = pkgs.python311.withPackages (ps: with ps; [
-          pip
-          setuptools
-          wheel
-          cython
-          numpy
-          # z3-solver
-        ]);
-
-      in
-      {
+      in {
         devShells = {
           cpp = pkgs.mkShell {
             packages = commonBuildInputs;
@@ -103,7 +96,12 @@
           };
 
           default = pkgs.mkShell {
-            packages = commonBuildInputs ++ [ pythonEnv pkgs.stdenv.cc.cc.lib ];
+            packages =
+              commonBuildInputs
+              ++ [
+                # pythonEnv
+                pkgs.stdenv.cc.cc.lib
+              ];
 
             CUDAToolkit_ROOT = "${cudaPackages.cudatoolkit}";
             CMAKE_PREFIX_PATH = pkgs.lib.makeSearchPath "" [
@@ -112,61 +110,65 @@
               cudaPackages.cuda_cudart
             ];
             LIBRARY_PATH = libraryPath;
-            CUDACXX          = "${cudaPackages.cudatoolkit}/bin/nvcc";
-            CC  = "${pkgs.gcc13.cc}/bin/gcc";
+            CUDACXX = "${cudaPackages.cudatoolkit}/bin/nvcc";
+            CC = "${pkgs.gcc13.cc}/bin/gcc";
             CXX = "${pkgs.gcc13.cc}/bin/g++";
 
-          shellHook = commonShellHook + ''
-            if [ ! -d .venv ]; then
-              echo "Creating Python venv..."
-              python -m venv .venv
-            fi
-            source .venv/bin/activate
+            shellHook =
+              commonShellHook
+              + ''
+                # if [ ! -d .venv ]; then
+                #   echo "Creating Python venv..."
+                #   python -m venv .venv
+                # fi
+                # source .venv/bin/activate
+                # python3 -m pip install setuptools wheel cython numpy z3-solver
+                #
+                # # Install z3-solver first to get compatible libz3.so
+                # # we also need to deduce the path, so we do this ahead
+                # # of time
+                # pip install z3-solver
 
-            # Install z3-solver first to get compatible libz3.so
-            # we also need to deduce the path, so we do this ahead
-            # of time
-            pip install z3-solver
 
-            # Get z3 paths from pip install
-            export Z3_PYTHON_INCLUDE=$(python - <<'PY'
-            import z3, os.path as p
-            print(p.join(p.dirname(z3.__file__), "include"))
-            PY
-            )
-            export Z3_PYTHON_LIB=$(python - <<'PY'
-            import z3, glob, os.path as p
-            d = p.join(p.dirname(z3.__file__), "lib")
-            print(glob.glob(p.join(d, "libz3.so"))[0])
-            PY
-            )
+                # Get z3 paths from pip install
+                export Z3_PYTHON_INCLUDE=$(python - <<'PY'
+                import z3, os.path as p
+                print(p.join(p.dirname(z3.__file__), "include"))
+                PY
+                )
+                export Z3_PYTHON_LIB=$(python - <<'PY'
+                import z3, glob, os.path as p
+                d = p.join(p.dirname(z3.__file__), "lib")
+                print(glob.glob(p.join(d, "libz3.so"))[0])
+                PY
+                )
 
-            echo "Using pip's z3:"
-            echo "  Include: $Z3_PYTHON_INCLUDE"
-            echo "  Library: $Z3_PYTHON_LIB"
-            export LD_LIBRARY_PATH="$(dirname $Z3_PYTHON_LIB):$LD_LIBRARY_PATH"
+                echo "Using pip's z3:"
+                echo "  Include: $Z3_PYTHON_INCLUDE"
+                echo "  Library: $Z3_PYTHON_LIB"
+                export LD_LIBRARY_PATH="$(dirname $Z3_PYTHON_LIB):$LD_LIBRARY_PATH"
 
-            echo "Patching mirage's cmake..."
-            sed -i 's|''${CUDAToolkit_LIBRARY_DIR}/libcuda.so|''${CUDAToolkit_LIBRARY_DIR}/stubs/libcuda.so|' cmake/cuda.cmake
+                echo "Patching mirage's cmake..."
+                sed -i 's|''${CUDAToolkit_LIBRARY_DIR}/libcuda.so|''${CUDAToolkit_LIBRARY_DIR}/stubs/libcuda.so|' cmake/cuda.cmake
 
-            # pip install -e . -v
+                # pip install -e . -v
 
-            # can build like
-            # cd build
-            # cmake .. \
-            #   -DBUILD_CPP_EXAMPLES=ON \
-            #   -DZ3_CXX_INCLUDE_DIRS="$Z3_PYTHON_INCLUDE" \
-            #   -DZ3_LIBRARIES="$Z3_PYTHON_LIB"
-            # make -j$(nproc)
+                # can build like
+                # cd build
+                # cmake .. \
+                #   -DBUILD_CPP_EXAMPLES=ON \
+                #   -DZ3_CXX_INCLUDE_DIRS="$Z3_PYTHON_INCLUDE" \
+                #   -DZ3_LIBRARIES="$Z3_PYTHON_LIB"
+                # make -j$(nproc)
 
-            echo "Python: $(python --version)"
-            echo ""
-            echo "Full DevShell (C++ + Python)"
-            echo ""
-            echo "CUDAToolkit_ROOT=$CUDAToolkit_ROOT"
-            echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
-            export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]}:$LD_LIBRARY_PATH
-          '';
+                echo "Python: $(python --version)"
+                echo ""
+                echo "Full DevShell (C++ + Python)"
+                echo ""
+                echo "CUDAToolkit_ROOT=$CUDAToolkit_ROOT"
+                echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
+                export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib]}:$LD_LIBRARY_PATH
+              '';
           };
 
           minimal = pkgs.mkShell {
