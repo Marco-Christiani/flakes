@@ -283,10 +283,10 @@
           ln -sfn ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so build/abstract_subexpr/release/
           ln -sfn ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so build/formal_verifier/release/
 
-          if ! compgen -G "$PWD/python/mirage/_cython/core.cpython-*.so" > /dev/null 2>&1; then
+          if ! compgen -G "$PWD/python/mirage/core.cpython-*.so" > /dev/null 2>&1; then
             echo ""
             echo "  Cython extension not built. To complete editable install:"
-            echo "    pip install --no-build-isolation --no-deps -e ."
+            echo "    python setup.py build_ext --inplace"
           fi
         '';
       };
