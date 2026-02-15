@@ -284,7 +284,7 @@
           if ! compgen -G "$PWD/python/mirage/_cython/core.cpython-*.so" > /dev/null 2>&1; then
             echo ""
             echo "  Cython extension not built. To complete editable install:"
-            echo "    pip install --no-build-isolation -e ."
+            echo "    pip install --no-build-isolation --no-deps -e ."
           fi
         '';
       };
