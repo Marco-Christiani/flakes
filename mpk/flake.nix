@@ -268,9 +268,6 @@
         };
 
         shellHook = ''
-          # Real NVIDIA driver for runtime (autoAddDriverRunpath only patches Nix-built binaries)
-          export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
           echo "mirage devShell"
           echo "  CUDA:   $(nvcc --version 2>/dev/null | grep release | head -1)"
           echo "  GCC:    $(${gccHost}/bin/gcc --version | head -1)"
@@ -286,10 +283,22 @@
           ln -sfn ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so build/abstract_subexpr/release/
           ln -sfn ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so build/formal_verifier/release/
 
+          # Build helper: builds Cython extension and patches RPATH for the
+          # real NVIDIA driver (autoAddDriverRunpath only covers Nix-built binaries).
+          # addDriverRunpath is sourced from the autoAddDriverRunpath setup hook.
+          mirage-build() {
+            python setup.py build_ext --inplace && \
+            for so in python/mirage/core.cpython-*.so; do
+              addDriverRunpath "$so"
+              echo "patched RPATH: $so"
+            done
+          }
+          export -f mirage-build
+
           if ! compgen -G "$PWD/python/mirage/core.cpython-*.so" > /dev/null 2>&1; then
             echo ""
             echo "  Cython extension not built. To complete editable install:"
-            echo "    python setup.py build_ext --inplace"
+            echo "    mirage-build"
           fi
         '';
       };
