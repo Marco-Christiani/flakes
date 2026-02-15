@@ -268,6 +268,9 @@
         };
 
         shellHook = ''
+          # Real NVIDIA driver for runtime (autoAddDriverRunpath only patches Nix-built binaries)
+          export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
           echo "mirage devShell"
           echo "  CUDA:   $(nvcc --version 2>/dev/null | grep release | head -1)"
           echo "  GCC:    $(${gccHost}/bin/gcc --version | head -1)"
