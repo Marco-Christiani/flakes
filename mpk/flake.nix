@@ -7,7 +7,11 @@
     };
   };
 
-  outputs = { self, nixpkgs, mirage-src }: let
+  outputs = {
+    self,
+    nixpkgs,
+    mirage-src,
+  }: let
     systems = ["x86_64-linux"];
 
     forAllSystems = f:
@@ -50,7 +54,6 @@
         inherit (cudaCfg) cudaArchitectures;
       };
 
-      # Override Python so torch → torch-bin everywhere, avoiding conflicts.
       python3 = pkgs.python3.override {
         packageOverrides = _self: super: {
           torch = super.torch-bin;
@@ -65,7 +68,7 @@
 
         src = pkgs.lib.cleanSource mirage-src;
 
-        # Disable the default build phases — we patch setup.py to skip
+        # Disable the default build phases - we patch setup.py to skip
         # the Rust and CMake builds (they're pre-built).
         dontUseCmakeConfigure = true;
 
@@ -73,7 +76,7 @@
           python3Packages.cython
           python3Packages.setuptools
           pkgs.autoAddDriverRunpath
-          cudaPackages.cudatoolkit  # nvcc must be on PATH for setup.py CUDA detection
+          cudaPackages.cudatoolkit # nvcc must be on PATH for setup.py CUDA detection
         ];
 
         buildInputs = [
@@ -87,7 +90,7 @@
         ];
 
         propagatedBuildInputs = [
-          python3Packages.torch  # resolves to torch-bin via override
+          python3Packages.torch # resolves to torch-bin via override
           python3Packages.numpy
           python3Packages.z3-solver
           python3Packages.tqdm
@@ -123,17 +126,17 @@
               'os.path.join(cuda_home, "lib64", "stubs"),' \
               'os.path.join(cuda_home, "lib64", "stubs"), os.path.join(cuda_home, "lib", "stubs"),'
 
-          # Patch __init__.py to use Nix store paths for .so preloading
+          # Patch __init__.py: use paths relative to __file__ instead of
+          # the repo-root-relative build/ paths (which only work for editable installs).
+          # The .so files are bundled into mirage/lib/ by postInstall below.
+          # z3 path is left as-is: z3-solver already bundles libz3.so correctly.
           substituteInPlace python/mirage/__init__.py \
             --replace-fail \
-              '_z3_so_path = os.path.join(_z3_libdir, "libz3.so")' \
-              '_z3_so_path = "${pkgs.z3.lib}/lib/libz3.so"' \
-            --replace-fail \
               '_subexpr_so_path = os.path.join(_mirage_root, "build", "abstract_subexpr", "release", "libabstract_subexpr.so")' \
-              '_subexpr_so_path = "${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so"' \
+              '_subexpr_so_path = os.path.join(_this_dir, "lib", "libabstract_subexpr.so")' \
             --replace-fail \
               '_formal_verifier_so_path = os.path.join(_mirage_root, "build", "formal_verifier", "release", "libformal_verifier.so")' \
-              '_formal_verifier_so_path = "${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so"'
+              '_formal_verifier_so_path = os.path.join(_this_dir, "lib", "libformal_verifier.so")'
         '';
 
         preBuild = ''
@@ -157,6 +160,15 @@
           cp -r --no-preserve=mode ${pkgs.nlohmann_json}/include/nlohmann deps/json/include/
         '';
 
+        postInstall = ''
+          # Bundle native .so files into the installed package so that the
+          # relative paths patched into __init__.py resolve correctly.
+          site=$out/${python3.sitePackages}/mirage/lib
+          mkdir -p $site
+          cp ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so $site/
+          cp ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so $site/
+        '';
+
         # Environment for the Cython extension compilation
         CUDA_HOME = "${cudaPackages.cudatoolkit}";
         CUDACXX = "${cudaPackages.cudatoolkit}/bin/nvcc";
@@ -178,7 +190,7 @@
         ps.setuptools
         ps.wheel
         ps.z3-solver
-        ps.torch  # resolves to torch-bin via override
+        ps.torch # resolves to torch-bin via override
         ps.numpy
         ps.transformers
         ps.accelerate
@@ -187,8 +199,8 @@
         ps.protobuf
         ps.pytest
       ]);
-      # Python interpreter with mirage + all deps — use for testing/running
-      mirageEnv = python3.withPackages (ps: [ mirage-python ps.pytest ]);
+      # Python interpreter with mirage + all deps
+      mirageEnv = python3.withPackages (ps: [mirage-python ps.pytest]);
     in {
       packages = {
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
@@ -197,6 +209,18 @@
         mirage-python = mirage-python;
         "mirage-env" = mirageEnv;
         default = mirage-python;
+      };
+
+      checks = {
+        # Run the upstream packaging test against the fully-built package.
+        # TestInstalledLayout verifies that native .so files are bundled
+        # inside the installed package tree (uses find_spec, no CUDA needed).
+        packaging = pkgs.runCommand "mirage-packaging-test" {
+          nativeBuildInputs = [mirageEnv];
+        } ''
+          python -m pytest ${src}/tests/python/test_packaging.py::TestInstalledLayout -v
+          touch $out
+        '';
       };
 
       devShells.default = pkgs.mkShell {
@@ -225,6 +249,11 @@
 
           # autoAddDriverRunpath for any binaries built in the shell
           pkgs.autoAddDriverRunpath
+
+          # dev tools
+          pkgs.pyright
+          pkgs.ruff
+          pkgs.mypy
         ];
 
         env = {
@@ -242,15 +271,30 @@
           echo "  Rust:   $(rustc --version)"
           echo "  Python: $(python3 --version)"
           export MIRAGE_HOME="$PWD"
+
+          # Editable install: make `import mirage` use the source tree
+          export PYTHONPATH="$PWD/python''${PYTHONPATH:+:$PYTHONPATH}"
+
+          # Symlink pre-built Rust .so into the layout __init__.py expects
+          mkdir -p build/abstract_subexpr/release build/formal_verifier/release
+          ln -sfn ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so build/abstract_subexpr/release/
+          ln -sfn ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so build/formal_verifier/release/
+
+          if ! compgen -G "$PWD/python/mirage/_cython/core.cpython-*.so" > /dev/null 2>&1; then
+            echo ""
+            echo "  Cython extension not built. To complete editable install:"
+            echo "    pip install -e ."
+          fi
         '';
       };
     };
   in {
     packages = forAllSystems (s: (mkFor s).packages);
+    checks = forAllSystems (s: (mkFor s).checks);
     devShells = forAllSystems (s: (mkFor s).devShells);
     formatter = forAllSystems (
       system: let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {inherit system;};
       in
         pkgs.alejandra
     );
