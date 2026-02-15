@@ -186,6 +186,7 @@
       # DevShell
       # ----------------------------------------------------------------
       pyEnv = python3.withPackages (ps: [
+        ps.pip
         ps.cython
         ps.setuptools
         ps.wheel
