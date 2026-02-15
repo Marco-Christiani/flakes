@@ -263,6 +263,8 @@
           CC = "${gccHost}/bin/gcc";
           CXX = "${gccHost}/bin/g++";
           Z3_LIBRARY_PATH = "${pkgs.z3.lib}/lib";
+          # setup.py uses lib64/stubs but Nix puts libcuda.so at lib/stubs
+          LIBRARY_PATH = "${cudaPackages.cudatoolkit}/lib/stubs";
         };
 
         shellHook = ''
