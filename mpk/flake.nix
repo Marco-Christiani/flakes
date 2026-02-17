@@ -202,6 +202,19 @@
       ]);
       # Python interpreter with mirage + all deps
       mirageEnv = python3.withPackages (ps: [mirage-python ps.pytest]);
+
+      # Standalone build helper — works with both `nix develop` and direnv.
+      # Builds the Cython extension in-place and patches RPATH so the real
+      # NVIDIA driver (/run/opengl-driver/lib) is found instead of the stub.
+      mirage-build = pkgs.writeShellScriptBin "mirage-build" ''
+        set -euo pipefail
+        python setup.py build_ext --inplace
+        for so in python/mirage/core.cpython-*.so; do
+          orig=$(${pkgs.patchelf}/bin/patchelf --print-rpath "$so")
+          ${pkgs.patchelf}/bin/patchelf --set-rpath "/run/opengl-driver/lib:$orig" "$so"
+          echo "patched RPATH: $so"
+        done
+      '';
     in {
       packages = {
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
@@ -232,7 +245,6 @@
           gccHost
           pkgs.pkg-config
           pkgs.git
-          pkgs.patchelf
 
           # CUDA
           cudaPackages.cudatoolkit
@@ -250,6 +262,9 @@
 
           # autoAddDriverRunpath for any binaries built in the shell
           pkgs.autoAddDriverRunpath
+
+          # Cython build + RPATH patch helper
+          mirage-build
 
           # dev tools
           pkgs.pyright
@@ -282,18 +297,6 @@
           mkdir -p build/abstract_subexpr/release build/formal_verifier/release
           ln -sfn ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so build/abstract_subexpr/release/
           ln -sfn ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so build/formal_verifier/release/
-
-          # Build helper: builds Cython extension and patches RPATH for the
-          # real NVIDIA driver (autoAddDriverRunpath only covers Nix-built binaries).
-          # addDriverRunpath is sourced from the autoAddDriverRunpath setup hook.
-          mirage-build() {
-            python setup.py build_ext --inplace && \
-            for so in python/mirage/core.cpython-*.so; do
-              addDriverRunpath "$so"
-              echo "patched RPATH: $so"
-            done
-          }
-          export -f mirage-build
 
           if ! compgen -G "$PWD/python/mirage/core.cpython-*.so" > /dev/null 2>&1; then
             echo ""
