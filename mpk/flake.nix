@@ -36,7 +36,22 @@
 
       # mirage-src is passed via --override-input from .envrc,
       # or defaults to the path: input above.
-      src = mirage-src;
+      # cleanSource only strips VCS metadata; we also need to exclude
+      # build/, .direnv/, and other local artifacts that path: copies.
+      src = pkgs.lib.cleanSourceWith {
+        src = mirage-src;
+        filter = path: type:
+          let baseName = baseNameOf (toString path);
+          in !(
+            baseName == "build"
+            || baseName == ".direnv"
+            || baseName == "result"
+            || baseName == "__pycache__"
+            || baseName == ".mypy_cache"
+            || baseName == ".pytest_cache"
+            || (type == "regular" && pkgs.lib.hasSuffix ".pyc" baseName)
+          ) && pkgs.lib.cleanSourceFilter path type;
+      };
 
       mirage-rust-libs = pkgs.callPackage ./nix/mirage-rust-libs.nix {
         inherit (pkgs) lib rustPlatform;
@@ -66,7 +81,7 @@
         version = "0.2.4";
         format = "setuptools";
 
-        src = pkgs.lib.cleanSource mirage-src;
+        inherit src;
 
         # Disable the default build phases - we patch setup.py to skip
         # the Rust and CMake builds (they're pre-built).
@@ -100,44 +115,10 @@
           python3Packages.accelerate
         ];
 
-        postPatch = ''
-          # Replace lines 145-232 of setup.py (Rust install + cargo builds + CMake build)
-          # with minimal stubs. The pre-built libs are symlinked in preBuild.
-          python3 << 'PATCH_EOF'
-          with open('setup.py', 'r') as f:
-              lines = f.readlines()
-
-          # Lines 145-232 (0-indexed: 144-231) contain the Rust/CMake build logic.
-          # Replace them with a minimal mirage_path assignment.
-          stub = [
-              "# (Nix: Rust libs and runtime are pre-built)\n",
-              "mirage_path = path.dirname(__file__) or '.'\n",
-              "\n",
-          ]
-          lines[144:232] = stub
-
-          with open('setup.py', 'w') as f:
-              f.writelines(lines)
-          PATCH_EOF
-
-          # Add lib/stubs to cuda_library_dirs for Nix CUDA layout
-          substituteInPlace setup.py \
-            --replace-fail \
-              'os.path.join(cuda_home, "lib64", "stubs"),' \
-              'os.path.join(cuda_home, "lib64", "stubs"), os.path.join(cuda_home, "lib", "stubs"),'
-
-          # Patch __init__.py: use paths relative to __file__ instead of
-          # the repo-root-relative build/ paths (which only work for editable installs).
-          # The .so files are bundled into mirage/lib/ by postInstall below.
-          # z3 path is left as-is: z3-solver already bundles libz3.so correctly.
-          substituteInPlace python/mirage/__init__.py \
-            --replace-fail \
-              '_subexpr_so_path = os.path.join(_mirage_root, "build", "abstract_subexpr", "release", "libabstract_subexpr.so")' \
-              '_subexpr_so_path = os.path.join(_this_dir, "lib", "libabstract_subexpr.so")' \
-            --replace-fail \
-              '_formal_verifier_so_path = os.path.join(_mirage_root, "build", "formal_verifier", "release", "libformal_verifier.so")' \
-              '_formal_verifier_so_path = os.path.join(_this_dir, "lib", "libformal_verifier.so")'
-        '';
+        # setup.py has MIRAGE_SKIP_NATIVE_BUILD guard; __init__.py has
+        # _find_native_lib() dual-mode; lib/stubs already in cuda_library_dirs.
+        # No source patches needed.
+        MIRAGE_SKIP_NATIVE_BUILD = "1";
 
         preBuild = ''
           # Create the build directory structure that setup.py / config_cython() expects
@@ -160,14 +141,8 @@
           cp -r --no-preserve=mode ${pkgs.nlohmann_json}/include/nlohmann deps/json/include/
         '';
 
-        postInstall = ''
-          # Bundle native .so files into the installed package so that the
-          # relative paths patched into __init__.py resolve correctly.
-          site=$out/${python3.sitePackages}/mirage/lib
-          mkdir -p $site
-          cp ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so $site/
-          cp ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so $site/
-        '';
+        # No postInstall needed: build_py copies .so from build/ symlinks
+        # created in preBuild into mirage/lib/ during the standard build phase.
 
         # Environment for the Cython extension compilation
         CUDA_HOME = "${cudaPackages.cudatoolkit}";
