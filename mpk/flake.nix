@@ -31,44 +31,13 @@
         config.allowUnfree = true;
       };
 
+      inherit (pkgs) lib;
+
       cudaPackages = pkgs.${cudaCfg.cudaPackagesAttr};
       gccHost = pkgs.${cudaCfg.gccHostAttr};
 
-      # mirage-src is passed via --override-input from .envrc,
-      # or defaults to the path: input above.
-      # cleanSource only strips VCS metadata; we also need to exclude
-      # build/, .direnv/, and other local artifacts that path: copies.
-      src = pkgs.lib.cleanSourceWith {
-        src = mirage-src;
-        filter = path: type:
-          let baseName = baseNameOf (toString path);
-          in !(
-            baseName == "build"
-            || baseName == ".direnv"
-            || baseName == "result"
-            || baseName == "__pycache__"
-            || baseName == ".mypy_cache"
-            || baseName == ".pytest_cache"
-            || (type == "regular" && pkgs.lib.hasSuffix ".pyc" baseName)
-          ) && pkgs.lib.cleanSourceFilter path type;
-      };
-
-      mirage-rust-libs = pkgs.callPackage ./nix/mirage-rust-libs.nix {
-        inherit (pkgs) lib rustPlatform;
-        inherit src python3;
-      };
-
-      mirage-runtime = pkgs.callPackage ./nix/mirage-runtime.nix {
-        inherit
-          gccHost
-          cudaPackages
-          mirage-rust-libs
-          src
-          ;
-        inherit (pkgs) autoAddDriverRunpath;
-        inherit (cudaCfg) cudaArchitectures;
-      };
-
+      # torch-bin override: prevent accelerate/transformers pulling in
+      # source-built torch which conflicts with the binary package.
       python3 = pkgs.python3.override {
         packageOverrides = _self: super: {
           torch = super.torch-bin;
@@ -76,22 +45,86 @@
       };
       python3Packages = python3.pkgs;
 
+      # -- Source filtering ------------------------------------------------
+      #
+      # Per-derivation source filtering so that e.g. editing a Python test
+      # file doesn't rebuild CUDA.  cleanSourceWith uses builtins.path
+      # which is content-addressed: if the filtered output is unchanged
+      # the store path is the same and downstream builds are cached.
+      #
+      # Filters are composed (&&) not nested, because cleanSourceWith
+      # unwraps nested sources to the original, breaking relative paths.
+
+      srcStr = toString mirage-src;
+      relPath = path: lib.removePrefix (srcStr + "/") (toString path);
+      topDir = path: builtins.head (lib.splitString "/" (relPath path));
+
+      baseFilter = path: type: let
+        bn = baseNameOf (toString path);
+      in
+        !(builtins.elem bn ["build" ".direnv" "result" "__pycache__" ".mypy_cache" ".pytest_cache"]
+          || (type == "regular" && lib.hasSuffix ".pyc" bn))
+        && lib.cleanSourceFilter path type;
+
+      mkSrc = name: extraFilter:
+        lib.cleanSourceWith {
+          inherit name;
+          src = mirage-src;
+          filter = path: type: baseFilter path type && extraFilter path type;
+        };
+
+      rustSrc = mkSrc "mirage-rust-src" (path: type: let
+        rp = relPath path;
+      in
+        # Include parent dirs so the nested crate paths exist in the output.
+        (type == "directory" && lib.hasPrefix rp "src/search/abstract_expr/abstract_subexpr")
+        || lib.hasPrefix "src/search/abstract_expr/abstract_subexpr" rp
+        || (type == "directory" && lib.hasPrefix rp "src/search/verification/formal_verifier_equiv")
+        || lib.hasPrefix "src/search/verification/formal_verifier_equiv" rp);
+
+      runtimeSrc = mkSrc "mirage-runtime-src" (path: _type: let
+        rp = relPath path;
+      in
+        builtins.elem (topDir path) ["src" "include" "cmake"]
+        || rp == "CMakeLists.txt"
+        || rp == "config.cmake");
+
+      pythonSrc = mkSrc "mirage-python-src" (path: _type: let
+        rp = relPath path;
+      in
+        builtins.elem (topDir path) ["python" "tests" "include"]
+        || builtins.elem rp ["setup.py" "pyproject.toml" "MANIFEST.in" "config.cmake" "requirements.txt"]);
+
+      # -- Derivations -----------------------------------------------------
+
+      mirage-rust-libs = pkgs.callPackage ./nix/mirage-rust-libs.nix {
+        src = rustSrc;
+        inherit python3;
+      };
+
+      mirage-runtime = pkgs.callPackage ./nix/mirage-runtime.nix {
+        inherit gccHost cudaPackages mirage-rust-libs;
+        src = runtimeSrc;
+        inherit (cudaCfg) cudaArchitectures;
+      };
+
       mirage-python = python3Packages.buildPythonPackage {
         pname = "mirage-project";
         version = "0.2.4";
         format = "setuptools";
 
-        inherit src;
+        src = pythonSrc;
 
-        # Disable the default build phases - we patch setup.py to skip
-        # the Rust and CMake builds (they're pre-built).
         dontUseCmakeConfigure = true;
+
+        # setup.py has MIRAGE_SKIP_NATIVE_BUILD guard — skip cargo/cmake.
+        MIRAGE_SKIP_NATIVE_BUILD = "1";
 
         nativeBuildInputs = [
           python3Packages.cython
           python3Packages.setuptools
           pkgs.autoAddDriverRunpath
-          cudaPackages.cudatoolkit # nvcc must be on PATH for setup.py CUDA detection
+          cudaPackages.cudatoolkit # nvcc on PATH for setup.py CUDA detection
         ];
 
         buildInputs = [
@@ -105,7 +138,7 @@
         ];
 
         propagatedBuildInputs = [
-          python3Packages.torch # resolves to torch-bin via override
+          python3Packages.torch
           python3Packages.numpy
           python3Packages.z3-solver
           python3Packages.tqdm
@@ -115,36 +148,22 @@
           python3Packages.accelerate
         ];
 
-        # setup.py has MIRAGE_SKIP_NATIVE_BUILD guard; __init__.py has
-        # _find_native_lib() dual-mode; lib/stubs already in cuda_library_dirs.
-        # No source patches needed.
-        MIRAGE_SKIP_NATIVE_BUILD = "1";
-
         preBuild = ''
-          # Create the build directory structure that setup.py / config_cython() expects
-          mkdir -p build/abstract_subexpr/release
-          mkdir -p build/formal_verifier/release
-
+          # Stage pre-built native libs where setup.py / config_cython() expects them
+          mkdir -p build/abstract_subexpr/release build/formal_verifier/release
           ln -sf ${mirage-runtime}/lib/libmirage_runtime.a build/ 2>/dev/null || true
           ln -sf ${mirage-runtime}/lib/libmirage_runtime.so build/ 2>/dev/null || true
           ln -sf ${mirage-rust-libs.abstract_subexpr}/lib/libabstract_subexpr.so build/abstract_subexpr/release/
           ln -sf ${mirage-rust-libs.formal_verifier}/lib/libformal_verifier.so build/formal_verifier/release/
 
-          # Populate deps/ with include content from mirage-runtime
-          # (submodules not available in flake source)
+          # Provide submodule headers from mirage-runtime and nixpkgs
           mkdir -p deps/cutlass/include deps/cutlass/tools/util/include deps/json/include
           cp -r --no-preserve=mode ${mirage-runtime}/include/cutlass deps/cutlass/include/
           cp -r --no-preserve=mode ${mirage-runtime}/include/cute deps/cutlass/include/
           cp -r --no-preserve=mode ${mirage-runtime}/include/cutlass deps/cutlass/tools/util/include/ 2>/dev/null || true
-
-          # nlohmann/json headers from nixpkgs
           cp -r --no-preserve=mode ${pkgs.nlohmann_json}/include/nlohmann deps/json/include/
         '';
 
-        # No postInstall needed: build_py copies .so from build/ symlinks
-        # created in preBuild into mirage/lib/ during the standard build phase.
-
-        # Environment for the Cython extension compilation
         CUDA_HOME = "${cudaPackages.cudatoolkit}";
         CUDACXX = "${cudaPackages.cudatoolkit}/bin/nvcc";
         CC = "${gccHost}/bin/gcc";
@@ -152,21 +171,24 @@
 
         meta = {
           description = "Mirage: A Multi-Level Superoptimizer for Tensor Algebra";
-          license = pkgs.lib.licenses.asl20;
-          platforms = pkgs.lib.platforms.linux;
+          license = lib.licenses.asl20;
+          platforms = lib.platforms.linux;
         };
       };
 
-      # ----------------------------------------------------------------
-      # DevShell
-      # ----------------------------------------------------------------
+      # -- Environments & helpers ------------------------------------------
+
+      # Python interpreter with mirage installed (for checks and app target)
+      mirageEnv = python3.withPackages (ps: [mirage-python ps.pytest]);
+
+      # Python interpreter for the devShell (editable workflow, no mirage)
       pyEnv = python3.withPackages (ps: [
         ps.pip
         ps.cython
         ps.setuptools
         ps.wheel
         ps.z3-solver
-        ps.torch # resolves to torch-bin via override
+        ps.torch
         ps.numpy
         ps.transformers
         ps.accelerate
@@ -175,70 +197,63 @@
         ps.protobuf
         ps.pytest
       ]);
-      # Python interpreter with mirage + all deps
-      mirageEnv = python3.withPackages (ps: [mirage-python ps.pytest]);
 
-      # Standalone build helper — works with both `nix develop` and direnv.
       # Builds the Cython extension in-place and patches RPATH so the real
       # NVIDIA driver (/run/opengl-driver/lib) is found instead of the stub.
       mirage-build = pkgs.writeShellScriptBin "mirage-build" ''
         set -euo pipefail
         python setup.py build_ext --inplace
         for so in python/mirage/core.cpython-*.so; do
-          orig=$(${pkgs.patchelf}/bin/patchelf --print-rpath "$so")
-          ${pkgs.patchelf}/bin/patchelf --set-rpath "/run/opengl-driver/lib:$orig" "$so"
+          origRpath=$(${pkgs.patchelf}/bin/patchelf --print-rpath "$so")
+          ${pkgs.patchelf}/bin/patchelf --set-rpath "${pkgs.addDriverRunpath.driverLink}/lib:$origRpath" "$so"
           echo "patched RPATH: $so"
         done
+      '';
+
+      mirage-test = pkgs.writeShellScriptBin "mirage-test" ''
+        exec ${mirageEnv}/bin/python -m pytest "$@"
       '';
     in {
       packages = {
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
         mirage-rust-libs-formal-verifier = mirage-rust-libs.formal_verifier;
-        mirage-runtime = mirage-runtime;
-        mirage-python = mirage-python;
-        "mirage-env" = mirageEnv;
+        inherit mirage-runtime mirage-python;
+        mirage-env = mirageEnv;
         default = mirage-python;
       };
 
-      checks = {
-        # Run the upstream packaging test against the fully-built package.
-        # TestInstalledLayout verifies that native .so files are bundled
-        # inside the installed package tree (uses find_spec, no CUDA needed).
-        packaging = pkgs.runCommand "mirage-packaging-test" {
+      checks.packaging =
+        pkgs.runCommand "mirage-packaging-test" {
           nativeBuildInputs = [mirageEnv];
         } ''
-          python -m pytest ${src}/tests/python/test_packaging.py::TestInstalledLayout -v
-          touch $out
+          set -o pipefail
+
+          # No GPU driver in sandbox — use CUDA stubs for libcuda.so
+          export LD_LIBRARY_PATH="${cudaPackages.cudatoolkit}/lib/stubs"
+
+          python -m pytest -m "not impure" -p no:cacheprovider -v \
+            ${pythonSrc}/tests/python/test_packaging.py 2>&1 | tee $out
         '';
+
+      apps.test = {
+        type = "app";
+        program = "${mirage-test}/bin/mirage-test";
       };
 
       devShells.default = pkgs.mkShell {
         packages = [
-          # Build tools
           pkgs.cmake
           pkgs.gnumake
           gccHost
           pkgs.pkg-config
           pkgs.git
-
-          # CUDA
           cudaPackages.cudatoolkit
           cudaPackages.cuda_cudart
-
-          # Rust
           pkgs.rustc
           pkgs.cargo
-
-          # Z3
           pkgs.z3
-
-          # Python environment
           pyEnv
-
-          # autoAddDriverRunpath for any binaries built in the shell
           pkgs.autoAddDriverRunpath
-
-          # Cython build + RPATH patch helper
           mirage-build
 
           # dev tools
@@ -253,7 +268,6 @@
           CC = "${gccHost}/bin/gcc";
           CXX = "${gccHost}/bin/g++";
           Z3_LIBRARY_PATH = "${pkgs.z3.lib}/lib";
-          # setup.py uses lib64/stubs but Nix puts libcuda.so at lib/stubs
           LIBRARY_PATH = "${cudaPackages.cudatoolkit}/lib/stubs";
         };
 
@@ -275,8 +289,7 @@
 
           if ! compgen -G "$PWD/python/mirage/core.cpython-*.so" > /dev/null 2>&1; then
             echo ""
-            echo "  Cython extension not built. To complete editable install:"
-            echo "    mirage-build"
+            echo "  Cython extension not built. Run: mirage-build"
           fi
         '';
       };
@@ -284,6 +297,7 @@
   in {
     packages = forAllSystems (s: (mkFor s).packages);
     checks = forAllSystems (s: (mkFor s).checks);
+    apps = forAllSystems (s: (mkFor s).apps);
     devShells = forAllSystems (s: (mkFor s).devShells);
     formatter = forAllSystems (
       system: let

@@ -3,9 +3,12 @@
   rustPlatform,
   python3,
   src,
-}:
-let
-  mkRustLib = { pname, crateDir, cargoHash }:
+}: let
+  mkRustLib = {
+    pname,
+    crateDir,
+    cargoHash,
+  }:
     rustPlatform.buildRustPackage {
       inherit pname;
       version = "0.1.0";
@@ -16,7 +19,7 @@ let
       inherit cargoHash;
 
       # pyo3 needs a Python interpreter at build time.
-      nativeBuildInputs = [ python3 ];
+      nativeBuildInputs = [python3];
 
       # cdylib — install the .so to $out/lib.
       # buildRustPackage uses --target so output lands in target/<triple>/release/
