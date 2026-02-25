@@ -52,7 +52,7 @@ in
           'set(CUDA_CUDA_LIBRARY ''${CUDAToolkit_LIBRARY_DIR}/libcuda.so)' \
           'set(CUDA_CUDA_LIBRARY ''${CUDAToolkit_LIBRARY_DIR}/stubs/libcuda.so)'
 
-      # Rust libs are pre-built by Nix — skip version checks
+      # Rust libs are pre-built by Nix - skip version checks
       substituteInPlace CMakeLists.txt \
         --replace-fail \
           'execute_process(COMMAND rustc --version' \

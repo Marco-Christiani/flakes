@@ -117,7 +117,7 @@
 
         dontUseCmakeConfigure = true;
 
-        # setup.py has MIRAGE_SKIP_NATIVE_BUILD guard — skip cargo/cmake.
+        # setup.py has MIRAGE_SKIP_NATIVE_BUILD guard - skip cargo/cmake.
         MIRAGE_SKIP_NATIVE_BUILD = "1";
 
         nativeBuildInputs = [
@@ -213,6 +213,21 @@
       mirage-test = pkgs.writeShellScriptBin "mirage-test" ''
         exec ${mirageEnv}/bin/python -m pytest "$@"
       '';
+
+      clean-build-dirs = pkgs.writeShellScriptBin "drun" ''
+        find . -type d -name build -prune -exec rm -rf {} \;
+      '';
+
+      drun = pkgs.writeShellScriptBin "drun" ''
+        # dont let host data leak, will break things
+        find . -type d -name build -prune -exec rm -rf {} \;
+        exec docker run --device nvidia.com/gpu=all --rm -it -v $PWD:/mirage:ro -w /mirage ''${1:-"nvidia/cuda:12.1.1-devel-ubuntu22.04"} bash
+      '';
+
+      run-act = pkgs.writeShellScriptBin "run-act" ''
+        find . -type d -name build -prune -exec rm -rf {} \;
+        act -W .github/workflows/build-test.yml --reuse -j test
+      '';
     in {
       packages = {
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
@@ -228,7 +243,7 @@
         } ''
           set -o pipefail
 
-          # No GPU driver in sandbox — use CUDA stubs for libcuda.so
+          # No GPU driver in sandbox - use CUDA stubs for libcuda.so
           export LD_LIBRARY_PATH="${cudaPackages.cudatoolkit}/lib/stubs"
 
           python -m pytest -m "not impure" -p no:cacheprovider -v \
@@ -254,12 +269,19 @@
           pkgs.z3
           pyEnv
           pkgs.autoAddDriverRunpath
-          mirage-build
 
           # dev tools
           pkgs.pyright
           pkgs.ruff
+          pkgs.ty # TODO: ty
           pkgs.mypy
+          pkgs.act
+
+          # interactive dev conveniences
+          mirage-build
+          clean-build-dirs
+          drun
+          run-act
         ];
 
         env = {

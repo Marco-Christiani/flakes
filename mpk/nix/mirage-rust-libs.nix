@@ -21,7 +21,7 @@
       # pyo3 needs a Python interpreter at build time.
       nativeBuildInputs = [python3];
 
-      # cdylib — install the .so to $out/lib.
+      # cdylib - install the .so to $out/lib.
       # buildRustPackage uses --target so output lands in target/<triple>/release/
       installPhase = ''
         runHook preInstall

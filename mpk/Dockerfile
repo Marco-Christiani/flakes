@@ -1,4 +1,4 @@
-# Build mirage via Nix flake — produces a working non-editable package.
+# Build mirage via Nix flake - produces a working non-editable package.
 #
 # Usage:
 #   docker build -t mirage-nix -f mpk/Dockerfile .
@@ -25,7 +25,7 @@ RUN nix build .#mirage-env -o /result -L
 # Run the packaging check to verify .so bundling
 RUN nix build .#checks.x86_64-linux.packaging -L
 
-# Minimal runtime image — just the Nix store closure
+# Minimal runtime image - just the Nix store closure
 FROM nixos/nix:latest
 
 RUN mkdir -p /etc/nix && echo "\
