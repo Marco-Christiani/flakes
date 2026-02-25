@@ -221,7 +221,7 @@
       drun = pkgs.writeShellScriptBin "drun" ''
         # dont let host data leak, will break things
         find . -type d -name build -prune -exec rm -rf {} \;
-        exec docker run --device nvidia.com/gpu=all --rm -it -v $PWD:/mirage:ro -w /mirage ''${1:-"nvidia/cuda:12.1.1-devel-ubuntu22.04"} bash
+        exec docker run --user "$(id -u)":"$(id -g)" --device nvidia.com/gpu=all --rm -it -v $PWD:/mirage:ro -w /mirage ''${1:-"nvidia/cuda:12.1.1-devel-ubuntu22.04"} bash
       '';
 
       run-act = pkgs.writeShellScriptBin "run-act" ''
