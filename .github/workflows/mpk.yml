@@ -7,6 +7,15 @@ on:
   pull_request:
     paths: [mpk/**]
   workflow_dispatch:
+    inputs:
+      mirage-ref:
+        description: "Mirage branch/ref to build against"
+        default: "mpk"
+        type: string
+      mirage-repo:
+        description: "Mirage repo (owner/name)"
+        default: "Marco-Christiani/mirage"
+        type: string
 
 jobs:
   build:
@@ -24,7 +33,7 @@ jobs:
       - name: Override mirage-src to fork
         run: |
           nix flake update mirage-src \
-            --override-input mirage-src github:Marco-Christiani/mirage/mpk \
+            --override-input mirage-src "github:${{ inputs.mirage-repo || 'Marco-Christiani/mirage' }}/${{ inputs.mirage-ref || 'mpk' }}" \
             --flake ./mpk
 
       - name: Check flake evaluates 1
