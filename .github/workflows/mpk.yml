@@ -1,0 +1,43 @@
+name: mpk
+
+on:
+  push:
+    branches: [main]
+    paths: [mpk/**]
+  pull_request:
+    paths: [mpk/**]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Override mirage-src to fork
+        run: |
+          nix flake update mirage-src \
+            --override-input mirage-src github:Marco-Christiani/mirage/mpk \
+            --flake ./mpk
+
+      - name: Check flake evaluates 1
+        run: nix flake show ./mpk --all-systems
+
+      - name: Check flake evaluates 2
+        run: nix flake check --no-build ./mpk --all-systems
+
+      - name: Build mirage-runtime
+        run: nix build ./mpk#mirage-runtime -L
+
+      - name: Build mirage-python
+        run: nix build ./mpk#default -L
+
+      - name: Run packaging checks
+        run: nix build ./mpk#checks.x86_64-linux.packaging -L
