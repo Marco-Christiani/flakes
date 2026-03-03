@@ -3,8 +3,8 @@
     "mirage-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1770654792,
-        "narHash": "sha256-axBRj6NkhtQrZwbRQMTJpDlmff1YSVh8XBX1d9nm4tg=",
+        "lastModified": 1772003255,
+        "narHash": "sha256-ClcjOfe3Um4+IzG1phNRN3PR2LBGusFJUarRHlARIVg=",
         "path": "/home/marco/Github/mirage",
         "type": "path"
       },

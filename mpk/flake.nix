@@ -25,6 +25,9 @@
 
     cudaCfg = import ./nix/cuda.nix;
 
+    # "Release" or "Debug" — applies to mirage-runtime CUDA/C++ build
+    buildType = "Release";
+
     mkFor = system: let
       pkgs = import nixpkgs {
         inherit system;
@@ -103,7 +106,7 @@
       };
 
       mirage-runtime = pkgs.callPackage ./nix/mirage-runtime.nix {
-        inherit gccHost cudaPackages mirage-rust-libs;
+        inherit gccHost cudaPackages mirage-rust-libs buildType;
         src = runtimeSrc;
         inherit (cudaCfg) cudaArchitectures;
       };
@@ -214,7 +217,7 @@
         exec ${mirageEnv}/bin/python -m pytest "$@"
       '';
 
-      clean-build-dirs = pkgs.writeShellScriptBin "drun" ''
+      clean-build-dirs = pkgs.writeShellScriptBin "clean-build-dirs" ''
         find . -type d -name build -prune -exec rm -rf {} \;
       '';
 

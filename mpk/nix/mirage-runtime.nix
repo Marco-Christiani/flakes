@@ -10,6 +10,7 @@
   nlohmann_json,
   mirage-rust-libs,
   cudaArchitectures ? ["86"],
+  buildType ? "Release",
   src,
 }: let
   cudaArchStr = lib.concatStringsSep ";" cudaArchitectures;
@@ -75,10 +76,30 @@ in
         --replace-fail \
           'set(FORMAL_VERIFIER_LIBRARIES ''${PROJECT_SOURCE_DIR}/build/formal_verifier/release/libformal_verifier.so)' \
           '# Rust libs provided via -D flags'
+
+      # Building shared libmirage_runtime.so surfaces ODR conflicts from both
+      # src/layout.cc and src/base/layout.cc exporting the same symbol.
+      # Keep the base implementation and drop the duplicate top-level source.
+      substituteInPlace CMakeLists.txt \
+        --replace-fail \
+          'file(GLOB_RECURSE MIRAGE_SRCS
+            src/*.cc
+          )' \
+          'file(GLOB_RECURSE MIRAGE_SRCS
+            src/*.cc
+          )
+          list(REMOVE_ITEM MIRAGE_SRCS ''${PROJECT_SOURCE_DIR}/src/layout.cc)'
+
+      # KNChunkOp::fingerprint is referenced in verification code but its
+      # definition is guarded by MIRAGE_FINGERPRINT_USE_CPU only. Build it
+      # unconditionally so shared linking resolves the symbol under CUDA builds.
+      substituteInPlace src/kernel/chunk.cc \
+        --replace-fail '#ifdef MIRAGE_FINGERPRINT_USE_CPU' '#if 1'
     '';
 
     cmakeFlags = [
-      "-DCMAKE_BUILD_TYPE=Release"
+      "-DCMAKE_BUILD_TYPE=${buildType}"
+      "-DBUILD_SHARED_LIBS=ON"
       "-DCMAKE_C_COMPILER=${gccHost}/bin/gcc"
       "-DCMAKE_CXX_COMPILER=${gccHost}/bin/g++"
       "-DCMAKE_CUDA_COMPILER=${cudaPackages.cudatoolkit}/bin/nvcc"
