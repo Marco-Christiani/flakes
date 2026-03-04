@@ -83,12 +83,12 @@ in
       substituteInPlace CMakeLists.txt \
         --replace-fail \
           'file(GLOB_RECURSE MIRAGE_SRCS
-            src/*.cc
-          )' \
+  src/*.cc
+)' \
           'file(GLOB_RECURSE MIRAGE_SRCS
-            src/*.cc
-          )
-          list(REMOVE_ITEM MIRAGE_SRCS ''${PROJECT_SOURCE_DIR}/src/layout.cc)'
+  src/*.cc
+)
+list(REMOVE_ITEM MIRAGE_SRCS ''${PROJECT_SOURCE_DIR}/src/layout.cc)'
 
       # KNChunkOp::fingerprint is referenced in verification code but its
       # definition is guarded by MIRAGE_FINGERPRINT_USE_CPU only. Build it
