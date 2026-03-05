@@ -14,7 +14,7 @@ on:
         type: string
       mirage-repo:
         description: "Mirage repo (owner/name)"
-        default: "Marco-Christiani/mirage"
+        default: "mirage-project/mirage"
         type: string
 
 jobs:
