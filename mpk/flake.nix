@@ -46,7 +46,11 @@
     mkFor = system: let
       pkgs = import nixpkgs {
         inherit system;
-        config.allowUnfree = true;
+        config = {
+          cudaSupport = true;
+          allowUnfreePredicate =
+            (import nixpkgs {inherit system;})._cuda.lib.allowUnfreeCudaPredicate;
+        };
       };
 
       inherit (pkgs) lib;
