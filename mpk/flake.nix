@@ -54,13 +54,7 @@
       cudaPackages = pkgs.${cudaCfg.cudaPackagesAttr};
       gccHost = pkgs.${cudaCfg.gccHostAttr};
 
-      # torch-bin override: prevent accelerate/transformers pulling in
-      # source-built torch which conflicts with the binary package.
-      python3 = pkgs.python3.override {
-        packageOverrides = _self: super: {
-          torch = super.torch-bin;
-        };
-      };
+      python3 = pkgs.python3;
       python3Packages = python3.pkgs;
 
       # -- Source filtering ------------------------------------------------
