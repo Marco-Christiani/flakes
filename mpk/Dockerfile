@@ -5,7 +5,7 @@
 #   docker run --rm --gpus all mirage-nix python -c "import mirage; print('ok')"
 #
 # The build runs entirely in the Nix sandbox (no GPU required).
-# Runtime needs nvidia-container-toolkit for libcuda.so.
+# Runtime needs nvidia-container-toolkit for driver injection, of course.
 
 FROM nixos/nix:latest AS builder
 
