@@ -168,10 +168,11 @@
 
       inherit
         (pythonLayer)
+        pythonSetBase
         pythonSet
         ;
 
-      miragePython = pythonSet.mirage-project;
+      miragePython = pythonSetBase.mirage-project;
 
       # Runtime environment for end users (default dependency preset only).
       mirageEnv = pythonSet.mkVirtualEnv "mirage-env" workspace.deps.default;
@@ -266,47 +267,62 @@
             lock_path = Path("${mirage-src}/uv.lock")
             lock_data = tomllib.loads(lock_path.read_text())
 
-            targets = [
-                "torch",
-                "triton",
-                "nvidia-cublas-cu12",
-                "nvidia-cuda-cupti-cu12",
-                "nvidia-cuda-nvrtc-cu12",
-                "nvidia-cuda-runtime-cu12",
-                "nvidia-cudnn-cu12",
-                "nvidia-cufft-cu12",
-                "nvidia-cufile-cu12",
-                "nvidia-curand-cu12",
-                "nvidia-cusolver-cu12",
-                "nvidia-cusparse-cu12",
-                "nvidia-cusparselt-cu12",
-                "nvidia-nccl-cu12",
-                "nvidia-nvjitlink-cu12",
-                "nvidia-nvshmem-cu12",
-                "nvidia-nvtx-cu12",
-            ]
-
-            lock_versions = {
-                p["name"]: p["version"]
-                for p in lock_data["package"]
-                if p["name"] in targets
+            target_candidates = {
+                "torch": ["torch"],
+                "triton": ["triton"],
+                "nvidia-cublas": ["nvidia-cublas", "nvidia-cublas-cu12"],
+                "nvidia-cuda-cupti": ["nvidia-cuda-cupti", "nvidia-cuda-cupti-cu12"],
+                "nvidia-cuda-nvrtc": ["nvidia-cuda-nvrtc", "nvidia-cuda-nvrtc-cu12"],
+                "nvidia-cuda-runtime": ["nvidia-cuda-runtime", "nvidia-cuda-runtime-cu12"],
+                "nvidia-cudnn": ["nvidia-cudnn-cu13", "nvidia-cudnn-cu12"],
+                "nvidia-cufft": ["nvidia-cufft", "nvidia-cufft-cu12"],
+                "nvidia-cufile": ["nvidia-cufile", "nvidia-cufile-cu12"],
+                "nvidia-curand": ["nvidia-curand", "nvidia-curand-cu12"],
+                "nvidia-cusolver": ["nvidia-cusolver", "nvidia-cusolver-cu12"],
+                "nvidia-cusparse": ["nvidia-cusparse", "nvidia-cusparse-cu12"],
+                "nvidia-cusparselt": ["nvidia-cusparselt-cu13", "nvidia-cusparselt-cu12"],
+                "nvidia-nccl": ["nvidia-nccl-cu13", "nvidia-nccl-cu12"],
+                "nvidia-nvjitlink": ["nvidia-nvjitlink", "nvidia-nvjitlink-cu12"],
+                "nvidia-nvshmem": ["nvidia-nvshmem-cu13", "nvidia-nvshmem-cu12"],
+                "nvidia-nvtx": ["nvidia-nvtx", "nvidia-nvtx-cu12"],
             }
 
-            missing_from_lock = [name for name in targets if name not in lock_versions]
+            lock_versions_all = {p["name"]: p["version"] for p in lock_data["package"]}
+
+            resolved = {}
+            missing_from_lock = []
+            for key, candidates in target_candidates.items():
+                selected = next((name for name in candidates if name in lock_versions_all), None)
+                if selected is None:
+                    missing_from_lock.append({"target": key, "candidates": candidates})
+                else:
+                    resolved[key] = {
+                        "dist": selected,
+                        "version": lock_versions_all[selected],
+                    }
+
             if missing_from_lock:
-                raise SystemExit(f"Missing expected packages in uv.lock: {missing_from_lock}")
+                raise SystemExit(
+                    "Missing expected package families in uv.lock: "
+                    + json.dumps(missing_from_lock, indent=2, sort_keys=True)
+                )
 
             mismatches = {}
-            for name in targets:
-                expected = lock_versions[name]
+            for key, info in resolved.items():
+                name = info["dist"]
+                expected = info["version"]
                 actual = md.version(name)
                 if actual != expected:
-                    mismatches[name] = {"expected": expected, "actual": actual}
+                    mismatches[key] = {
+                        "dist": name,
+                        "expected": expected,
+                        "actual": actual,
+                    }
 
             if mismatches:
                 raise SystemExit("Version mismatch against uv.lock: " + json.dumps(mismatches, indent=2, sort_keys=True))
 
-            print(json.dumps({name: lock_versions[name] for name in targets}, indent=2, sort_keys=True))
+            print(json.dumps(resolved, indent=2, sort_keys=True))
             PY
           '';
 
@@ -339,12 +355,32 @@
                 raise SystemExit(f"Expected CUDA-enabled torch wheel metadata, got: {report}")
 
             expected_layout = {
-                "cudart": "nvidia/cuda_runtime/lib/libcudart.so*",
-                "cublas": "nvidia/cublas/lib/libcublas.so*",
-                "cudnn": "nvidia/cudnn/lib/libcudnn.so*",
-                "nccl": "nvidia/nccl/lib/libnccl.so*",
-                "nvjitlink": "nvidia/nvjitlink/lib/libnvJitLink.so*",
-                "torch_cuda": "torch/lib/libtorch_cuda.so*",
+                "cudart": [
+                    "nvidia/cuda_runtime/lib/libcudart.so*",
+                    "nvidia/cu13/lib/libcudart.so*",
+                    "nvidia/cu12/lib/libcudart.so*",
+                ],
+                "cublas": [
+                    "nvidia/cublas/lib/libcublas.so*",
+                    "nvidia/cu13/lib/libcublas.so*",
+                    "nvidia/cu12/lib/libcublas.so*",
+                ],
+                "cudnn": [
+                    "nvidia/cudnn/lib/libcudnn.so*",
+                    "nvidia/cu13/lib/libcudnn.so*",
+                    "nvidia/cu12/lib/libcudnn.so*",
+                ],
+                "nccl": [
+                    "nvidia/nccl/lib/libnccl.so*",
+                    "nvidia/cu13/lib/libnccl.so*",
+                    "nvidia/cu12/lib/libnccl.so*",
+                ],
+                "nvjitlink": [
+                    "nvidia/nvjitlink/lib/libnvJitLink.so*",
+                    "nvidia/cu13/lib/libnvJitLink.so*",
+                    "nvidia/cu12/lib/libnvJitLink.so*",
+                ],
+                "torch_cuda": ["torch/lib/libtorch_cuda.so*"],
             }
 
             search_roots = []
@@ -353,17 +389,41 @@
                 if p.name == "site-packages":
                     search_roots.append(p)
 
-            # Fallback for editable/symlinked contexts.
+            # fallback for editable/symlinked contexts
             search_roots.append(Path(torch.__file__).resolve().parents[1])
 
             resolved = {}
-            for key, pattern in expected_layout.items():
+            missing = {}
+            for key, patterns in expected_layout.items():
                 matches = []
                 for root in search_roots:
-                    matches.extend(sorted(root.glob(pattern)))
+                    for pattern in patterns:
+                        matches.extend(sorted(root.glob(pattern)))
                 if not matches:
-                    raise SystemExit(f"Missing expected CUDA wheel artifact: {key} ({pattern})")
+                    missing[key] = patterns
+                    continue
                 resolved[key] = str(matches[0])
+
+            if missing:
+                nvidia_layout = {}
+                for root in search_roots:
+                    nvidia_root = root / "nvidia"
+                    if nvidia_root.is_dir():
+                        nvidia_layout[str(root)] = sorted(
+                            entry.name
+                            for entry in nvidia_root.iterdir()
+                            if entry.is_dir()
+                        )
+
+                debug = {
+                    "missing": missing,
+                    "search_roots": [str(p) for p in search_roots],
+                    "nvidia_subdirs": nvidia_layout,
+                }
+                raise SystemExit(
+                    "Missing expected CUDA wheel artifacts: "
+                    + json.dumps(debug, indent=2, sort_keys=True)
+                )
 
             report["resolved_artifacts"] = resolved
             print(json.dumps(report, indent=2, sort_keys=True))

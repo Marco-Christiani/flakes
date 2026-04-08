@@ -42,21 +42,36 @@ Python packaging policy for MPK
   # Keep this as an isolated layer so deviations from plain uv/pip installs are
   # explicit and auditable.
 
-  nvidiaCudaWheelPackages = [
+  nvidiaCudaWheelPackageCandidates = [
+    "nvidia-cublas"
     "nvidia-cublas-cu12"
+    "nvidia-cuda-cupti"
     "nvidia-cuda-cupti-cu12"
+    "nvidia-cuda-nvrtc"
     "nvidia-cuda-nvrtc-cu12"
+    "nvidia-cuda-runtime"
     "nvidia-cuda-runtime-cu12"
     "nvidia-cudnn-cu12"
+    "nvidia-cudnn-cu13"
+    "nvidia-cufile"
     "nvidia-cufile-cu12"
+    "nvidia-cufft"
     "nvidia-cufft-cu12"
+    "nvidia-curand"
     "nvidia-curand-cu12"
+    "nvidia-cusolver"
     "nvidia-cusolver-cu12"
+    "nvidia-cusparse"
     "nvidia-cusparse-cu12"
     "nvidia-cusparselt-cu12"
+    "nvidia-cusparselt-cu13"
     "nvidia-nccl-cu12"
+    "nvidia-nccl-cu13"
+    "nvidia-nvjitlink"
     "nvidia-nvjitlink-cu12"
     "nvidia-nvshmem-cu12"
+    "nvidia-nvshmem-cu13"
+    "nvidia-nvtx"
     "nvidia-nvtx-cu12"
   ];
 
@@ -64,8 +79,6 @@ Python packaging policy for MPK
     "torch"
     "triton"
   ];
-
-  cudaWheelPackages = nvidiaCudaWheelPackages ++ cudaConsumerPackages;
 
   # Host driver provided libraries (outside Nix store).
   driverProvidedLibs = [
@@ -118,10 +131,11 @@ Python packaging policy for MPK
   # - crossWheelCudaLibs: provided by sibling CUDA wheels at final env runtime
   wheelCompatIgnore = driverProvidedLibs ++ crossWheelCudaLibs;
 
-  mkCudaWheelCompatOverride = final: prev: name: let
-    isCudaConsumer = builtins.elem name cudaConsumerPackages;
+  mkCudaWheelCompatOverride =
+    final: prev: nvidiaCudaWheelPackages: name: let
+      isCudaConsumer = builtins.elem name cudaConsumerPackages;
 
-    nvidiaDeps = map (n: final.${n}) nvidiaCudaWheelPackages;
+      nvidiaDeps = map (n: final.${n}) nvidiaCudaWheelPackages;
 
     nvidiaSearchPathsScript = lib.optionalString isCudaConsumer (
       lib.concatMapStringsSep "\n" (
@@ -175,8 +189,14 @@ Python packaging policy for MPK
         '';
     });
 
-  cudaWheelCompatOverlay = final: prev:
-    builtins.listToAttrs (map (name: lib.nameValuePair name (mkCudaWheelCompatOverride final prev name)) cudaWheelPackages);
+  cudaWheelCompatOverlay = final: prev: let
+    nvidiaCudaWheelPackages = builtins.filter (name: builtins.hasAttr name prev) nvidiaCudaWheelPackageCandidates;
+    cudaConsumers = builtins.filter (name: builtins.hasAttr name prev) cudaConsumerPackages;
+    cudaWheelPackages = nvidiaCudaWheelPackages ++ cudaConsumers;
+  in
+    builtins.listToAttrs (
+      map (name: lib.nameValuePair name (mkCudaWheelCompatOverride final prev nvidiaCudaWheelPackages name)) cudaWheelPackages
+    );
 
   # Project-native overrides.
   mirageNativeOverlay = final: prev: {
@@ -244,18 +264,20 @@ Python packaging policy for MPK
     });
   };
 
-  pythonSet = pythonBase.overrideScope (
+  pythonSetBase = pythonBase.overrideScope (
     lib.composeManyExtensions [
       pyproject-build-systems.overlays.default
       lockParityOverlay
-      cudaWheelCompatOverlay
       mirageNativeOverlay
     ]
   );
 
+  pythonSet = pythonSetBase.overrideScope cudaWheelCompatOverlay;
+
 in {
   inherit
     python3
+    pythonSetBase
     pythonSet
     ;
 }
