@@ -169,9 +169,17 @@
       inherit
         (pythonLayer)
         pythonSet
-        mirageEnv
-        mirageDevEnv
         ;
+
+      miragePython = pythonSet.mirage-project;
+
+      # Runtime environment for end users (default dependency preset only).
+      mirageEnv = pythonSet.mkVirtualEnv "mirage-env" workspace.deps.default;
+
+      # Test/development environment (mirage-project with dev dependency-group).
+      mirageDevEnv = pythonSet.mkVirtualEnv "mirage-dev-env" {
+        mirage-project = ["dev"];
+      };
 
       # -- Environments & helpers ------------------------------------------
 
@@ -210,11 +218,26 @@
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
         mirage-rust-libs-formal-verifier = mirage-rust-libs.formal_verifier;
         inherit mirage-runtime;
+        mirage-python = miragePython;
         mirage-env = mirageEnv;
-        default = mirageEnv;
+        mirage-dev-env = mirageDevEnv;
+        default = miragePython;
       };
 
       checks = {
+        # Smoke-test the Nix package artifact consumed by downstream users.
+        package-import =
+          pkgs.runCommand "mirage-package-import-check" {
+            nativeBuildInputs = [mirageEnv];
+          } ''
+            export LD_LIBRARY_PATH="${cudaPackages.cudatoolkit}/lib/stubs"
+
+            ${mirageEnv}/bin/python - <<'PY' > "$out"
+            import mirage
+            print(mirage.__file__)
+            PY
+          '';
+
         packaging =
           pkgs.runCommand "mirage-packaging-test" {
             nativeBuildInputs = [mirageDevEnv];

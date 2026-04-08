@@ -253,16 +253,9 @@ Python packaging policy for MPK
     ]
   );
 
-  mirageEnv = pythonSet.mkVirtualEnv "mirage-env" workspace.deps.default;
-
-  mirageDevEnv = pythonSet.mkVirtualEnv "mirage-env" {
-    mirage-project = ["dev"];
-  };
 in {
   inherit
     python3
     pythonSet
-    mirageEnv
-    mirageDevEnv
     ;
 }
