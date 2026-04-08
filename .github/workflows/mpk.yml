@@ -1,11 +1,6 @@
 name: mpk
 
 on:
-  push:
-    branches: [main]
-    paths: [mpk/**]
-  pull_request:
-    paths: [mpk/**]
   workflow_dispatch:
     inputs:
       mirage-ref:
@@ -20,6 +15,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +27,10 @@ jobs:
             accept-flake-config = true
 
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diff-store: true
 
       - name: Override mirage-src to fork
         run: |
