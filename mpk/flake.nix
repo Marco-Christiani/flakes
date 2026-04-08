@@ -511,12 +511,17 @@
           system = s;
           cudaPackagesAttr = "cudaPackages_13";
         };
+        prefixAttrs = prefix: attrs:
+          builtins.listToAttrs (
+            map (name: {
+              name = "${prefix}${name}";
+              value = attrs.${name};
+            }) (builtins.attrNames attrs)
+          );
       in
         defaultLane.packages
-        // {
-          cuda12 = cuda12Lane.packages;
-          cuda13 = cuda13Lane.packages;
-        }
+        // prefixAttrs "cuda12-" cuda12Lane.packages
+        // prefixAttrs "cuda13-" cuda13Lane.packages
     );
 
     checks = forAllSystems (
@@ -530,12 +535,17 @@
           system = s;
           cudaPackagesAttr = "cudaPackages_13";
         };
+        prefixAttrs = prefix: attrs:
+          builtins.listToAttrs (
+            map (name: {
+              name = "${prefix}${name}";
+              value = attrs.${name};
+            }) (builtins.attrNames attrs)
+          );
       in
         defaultLane.checks
-        // {
-          cuda12 = cuda12Lane.checks;
-          cuda13 = cuda13Lane.checks;
-        }
+        // prefixAttrs "cuda12-" cuda12Lane.checks
+        // prefixAttrs "cuda13-" cuda13Lane.checks
     );
 
     apps = forAllSystems (s: (mkFor {system = s;}).apps);
