@@ -500,8 +500,44 @@
       };
     };
   in {
-    packages = forAllSystems (s: (mkFor {system = s;}).packages);
-    checks = forAllSystems (s: (mkFor {system = s;}).checks);
+    packages = forAllSystems (
+      s: let
+        defaultLane = mkFor {system = s;};
+        cuda12Lane = mkFor {
+          system = s;
+          cudaPackagesAttr = "cudaPackages_12";
+        };
+        cuda13Lane = mkFor {
+          system = s;
+          cudaPackagesAttr = "cudaPackages_13";
+        };
+      in
+        defaultLane.packages
+        // {
+          cuda12 = cuda12Lane.packages;
+          cuda13 = cuda13Lane.packages;
+        }
+    );
+
+    checks = forAllSystems (
+      s: let
+        defaultLane = mkFor {system = s;};
+        cuda12Lane = mkFor {
+          system = s;
+          cudaPackagesAttr = "cudaPackages_12";
+        };
+        cuda13Lane = mkFor {
+          system = s;
+          cudaPackagesAttr = "cudaPackages_13";
+        };
+      in
+        defaultLane.checks
+        // {
+          cuda12 = cuda12Lane.checks;
+          cuda13 = cuda13Lane.checks;
+        }
+    );
+
     apps = forAllSystems (s: (mkFor {system = s;}).apps);
     devShells = forAllSystems (s: (mkFor {system = s;}).devShells);
     formatter = forAllSystems (
