@@ -3,6 +3,15 @@ name: mpk
 on:
   workflow_dispatch:
     inputs:
+      cuda-target:
+        description: "CUDA target variant to build and check"
+        type: choice
+        options:
+          - "cuda12-6"
+          - "cuda12-8"
+          - "cuda12-9"
+          - "cuda13-0"
+        default: "cuda12-8"
       mirage-ref:
         description: "Mirage branch/ref to build against"
         default: "mpk"
@@ -14,41 +23,36 @@ on:
 
 jobs:
   build:
+    name: Build and validate MPK flake targets
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout flake repository
+        uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Install Nix with flake config support
+        uses: cachix/install-nix-action@v31
         with:
-          extra-conf: |
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
             accept-flake-config = true
 
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diff-store: true
+      - name: Verify flake output graph evaluates for current system
+        run: nix flake show ./mpk --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}"
 
-      - name: Override mirage-src to fork
-        run: |
-          nix flake update mirage-src \
-            --override-input mirage-src "github:${{ inputs.mirage-repo || 'Marco-Christiani/mirage' }}/${{ inputs.mirage-ref || 'mpk' }}" \
-            --flake ./mpk
+      - name: Verify checks evaluate without building
+        run: nix flake check --no-build ./mpk --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}"
 
-      - name: Check flake evaluates 1
-        run: nix flake show ./mpk --all-systems
+      - name: Build runtime artifact for selected CUDA major.minor
+        run: nix build ./mpk#${{ inputs.cuda-target }}-mirage-runtime --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}" -L
 
-      - name: Check flake evaluates 2
-        run: nix flake check --no-build ./mpk --all-systems
+      - name: Build Python package artifact for selected CUDA major.minor
+        run: nix build ./mpk#${{ inputs.cuda-target }}-mirage-python --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}" -L
 
-      - name: Build mirage-runtime
-        run: nix build ./mpk#mirage-runtime -L
+      - name: Run lock parity check for selected CUDA major.minor
+        run: nix build ./mpk#checks.x86_64-linux.${{ inputs.cuda-target }}-lock-parity --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}" -L
 
-      - name: Build mirage-python
-        run: nix build ./mpk#default -L
-
-      - name: Run packaging checks
-        run: nix build ./mpk#checks.x86_64-linux.packaging -L
+      - name: Run packaging check for selected CUDA major.minor
+        run: nix build ./mpk#checks.x86_64-linux.${{ inputs.cuda-target }}-packaging --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}" -L

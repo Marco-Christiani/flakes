@@ -49,6 +49,25 @@
   }: let
     systems = ["x86_64-linux"];
 
+    cudaVariants = [
+      {
+        name = "cuda12-6";
+        cudaPackagesAttr = "cudaPackages_12_6";
+      }
+      {
+        name = "cuda12-8";
+        cudaPackagesAttr = "cudaPackages_12_8";
+      }
+      {
+        name = "cuda12-9";
+        cudaPackagesAttr = "cudaPackages_12_9";
+      }
+      {
+        name = "cuda13-0";
+        cudaPackagesAttr = "cudaPackages_13_0";
+      }
+    ];
+
     forAllSystems = f:
       builtins.listToAttrs (
         map (system: {
@@ -63,6 +82,34 @@
 
     # Load uv workspace from mirage source (reads pyproject.toml + uv.lock)
     workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = mirage-src;};
+
+    prefixAttrs = prefix: attrs:
+      builtins.listToAttrs (
+        map (name: {
+          name = "${prefix}${name}";
+          value = attrs.${name};
+        }) (builtins.attrNames attrs)
+      );
+
+    mkCudaVariantOutputs = mkFor: outputKind: system: let
+      defaultOutput = (mkFor {inherit system;}).${outputKind};
+    in
+      builtins.foldl'
+      (
+        acc: variant: let
+          variantOutput =
+            (mkFor {
+              inherit system;
+              cudaPackagesAttr = variant.cudaPackagesAttr;
+            })
+            .${
+              outputKind
+            };
+        in
+          acc // prefixAttrs "${variant.name}-" variantOutput
+      )
+      defaultOutput
+      cudaVariants;
 
     mkFor = {
       system,
@@ -500,53 +547,9 @@
       };
     };
   in {
-    packages = forAllSystems (
-      s: let
-        defaultLane = mkFor {system = s;};
-        cuda12Lane = mkFor {
-          system = s;
-          cudaPackagesAttr = "cudaPackages_12";
-        };
-        cuda13Lane = mkFor {
-          system = s;
-          cudaPackagesAttr = "cudaPackages_13";
-        };
-        prefixAttrs = prefix: attrs:
-          builtins.listToAttrs (
-            map (name: {
-              name = "${prefix}${name}";
-              value = attrs.${name};
-            }) (builtins.attrNames attrs)
-          );
-      in
-        defaultLane.packages
-        // prefixAttrs "cuda12-" cuda12Lane.packages
-        // prefixAttrs "cuda13-" cuda13Lane.packages
-    );
+    packages = forAllSystems (s: mkCudaVariantOutputs mkFor "packages" s);
 
-    checks = forAllSystems (
-      s: let
-        defaultLane = mkFor {system = s;};
-        cuda12Lane = mkFor {
-          system = s;
-          cudaPackagesAttr = "cudaPackages_12";
-        };
-        cuda13Lane = mkFor {
-          system = s;
-          cudaPackagesAttr = "cudaPackages_13";
-        };
-        prefixAttrs = prefix: attrs:
-          builtins.listToAttrs (
-            map (name: {
-              name = "${prefix}${name}";
-              value = attrs.${name};
-            }) (builtins.attrNames attrs)
-          );
-      in
-        defaultLane.checks
-        // prefixAttrs "cuda12-" cuda12Lane.checks
-        // prefixAttrs "cuda13-" cuda13Lane.checks
-    );
+    checks = forAllSystems (s: mkCudaVariantOutputs mkFor "checks" s);
 
     apps = forAllSystems (s: (mkFor {system = s;}).apps);
     devShells = forAllSystems (s: (mkFor {system = s;}).devShells);
