@@ -21,6 +21,7 @@ Python packaging policy for MPK
   pyproject-nix,
   pyproject-build-systems,
   workspace,
+  python3,
   # project-specific native artifacts injected into mirage-project build
   mirage-runtime,
   mirage-rust-libs,
@@ -28,8 +29,6 @@ Python packaging policy for MPK
   cudaPackages,
   gccHost,
 }: let
-  inherit (pkgs) python3;
-
   # Base pyproject.nix package set.
   pythonBase = pkgs.callPackage pyproject-nix.build.packages {
     python = python3;

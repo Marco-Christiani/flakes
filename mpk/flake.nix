@@ -40,6 +40,7 @@
   };
 
   outputs = {
+    self,
     nixpkgs,
     mirage-src,
     pyproject-nix,
@@ -47,6 +48,24 @@
     pyproject-build-systems,
   }: let
     systems = ["x86_64-linux"];
+
+    pythonVariants = [
+      {
+        name = "py310";
+        pythonAttr = "python310";
+        pythonTag = "cp310";
+      }
+      {
+        name = "py311";
+        pythonAttr = "python311";
+        pythonTag = "cp311";
+      }
+      {
+        name = "py312";
+        pythonAttr = "python312";
+        pythonTag = "cp312";
+      }
+    ];
 
     cudaVariants = [
       {
@@ -84,6 +103,28 @@
         systems
       );
 
+    defaultPythonAttr = "python3";
+
+    cudaTagFromPackagesAttr = cudaPackagesAttr:
+      if cudaPackagesAttr == "cudaPackages_12_1"
+      then "cu121"
+      else if cudaPackagesAttr == "cudaPackages_12_4"
+      then "cu124"
+      else if cudaPackagesAttr == "cudaPackages_12_6"
+      then "cu126"
+      else if cudaPackagesAttr == "cudaPackages_12_8"
+      then "cu128"
+      else if cudaPackagesAttr == "cudaPackages_12_9"
+      then "cu129"
+      else if cudaPackagesAttr == "cudaPackages_13_0"
+      then "cu130"
+      else "";
+
+    joinNameParts = parts:
+      if parts == []
+      then ""
+      else "${builtins.concatStringsSep "-" parts}-";
+
     # "Release" or "Debug" -- applies to mirage-runtime CUDA/C++ build
     buildType = "Release";
 
@@ -98,29 +139,109 @@
         }) (builtins.attrNames attrs)
       );
 
-    mkCudaVariantOutputs = mkFor: outputKind: system: let
+    variantSpecs =
+      (map (pythonVariant: {
+          nameParts = [pythonVariant.name];
+          args = {inherit (pythonVariant) pythonAttr;};
+        })
+        pythonVariants)
+      ++ (map (cudaVariant: {
+          nameParts = [cudaVariant.name];
+          args = {inherit (cudaVariant) cudaPackagesAttr;};
+        })
+        cudaVariants)
+      ++ builtins.concatMap
+      (pythonVariant:
+        map (cudaVariant: {
+          nameParts = [
+            pythonVariant.name
+            cudaVariant.name
+          ];
+          args = {
+            inherit (pythonVariant) pythonAttr;
+            inherit (cudaVariant) cudaPackagesAttr;
+          };
+        })
+        cudaVariants)
+      pythonVariants;
+
+    mkVariantOutputs = mkFor: outputKind: system: let
       defaultOutput = (mkFor {inherit system;}).${outputKind};
     in
       builtins.foldl'
       (
-        acc: variant: let
+        acc: variantSpec: let
           variantOutput =
             (mkFor {
-              inherit system;
-              inherit (variant) cudaPackagesAttr;
-            })
+                inherit system;
+              }
+              // variantSpec.args)
             .${
               outputKind
             };
         in
-          acc // prefixAttrs "${variant.name}-" variantOutput
+          acc // prefixAttrs (joinNameParts variantSpec.nameParts) variantOutput
       )
       defaultOutput
-      cudaVariants;
+      variantSpecs;
+
+    releaseMatrixEntries =
+      builtins.concatMap
+      (pythonVariant:
+        map (cudaVariant: let
+          prefix = joinNameParts [
+            pythonVariant.name
+            cudaVariant.name
+          ];
+        in {
+          lane = builtins.concatStringsSep "-" [
+            pythonVariant.name
+            cudaVariant.name
+          ];
+          python = {
+            name = pythonVariant.name;
+            attr = pythonVariant.pythonAttr;
+            tag = pythonVariant.pythonTag;
+          };
+          cuda = {
+            name = cudaVariant.name;
+            attr = cudaVariant.cudaPackagesAttr;
+            tag = cudaTagFromPackagesAttr cudaVariant.cudaPackagesAttr;
+          };
+          packages = {
+            wheel = "${prefix}mirage-python-wheel";
+            wheelRaw = "${prefix}mirage-python-wheel-raw";
+            wheelRepaired = "${prefix}mirage-python-wheel-repaired";
+          };
+          checks = {
+            wheelRepaired = "${prefix}wheel-repaired";
+            auditwheelShow = "${prefix}wheel-auditwheel-show";
+          };
+        })
+        cudaVariants)
+      pythonVariants;
+
+    mkReleaseMatrix = system: let
+      pkgs = import nixpkgs {inherit system;};
+      jsonFile = pkgs.writeText "mpk-release-matrix.json" (builtins.toJSON releaseMatrixEntries);
+      matrixApp = pkgs.writeShellApplication {
+        name = "release-matrix";
+        text = ''
+          cat ${jsonFile}
+        '';
+      };
+    in {
+      packages.release-matrix-json = jsonFile;
+      apps.release-matrix = {
+        type = "app";
+        program = "${matrixApp}/bin/release-matrix";
+      };
+    };
 
     mkFor = {
       system,
       cudaPackagesAttr ? "cudaPackages_12",
+      pythonAttr ? defaultPythonAttr,
       gccHostAttr ? "gcc13",
     }: let
       pkgs = import nixpkgs {
@@ -132,24 +253,16 @@
         };
       };
 
-      inherit (pkgs) lib python3;
+      python3 =
+        if builtins.hasAttr pythonAttr pkgs
+        then builtins.getAttr pythonAttr pkgs
+        else throw "Unsupported Python attribute `${pythonAttr}` for system `${system}`";
+
+      inherit (pkgs) lib;
 
       cudaPackages = pkgs.${cudaPackagesAttr};
       gccHost = pkgs.${gccHostAttr};
-      expectedCudaTag =
-        if cudaPackagesAttr == "cudaPackages_12_1"
-        then "cu121"
-        else if cudaPackagesAttr == "cudaPackages_12_4"
-        then "cu124"
-        else if cudaPackagesAttr == "cudaPackages_12_6"
-        then "cu126"
-        else if cudaPackagesAttr == "cudaPackages_12_8"
-        then "cu128"
-        else if cudaPackagesAttr == "cudaPackages_12_9"
-        then "cu129"
-        else if cudaPackagesAttr == "cudaPackages_13_0"
-        then "cu130"
-        else "";
+      expectedCudaTag = cudaTagFromPackagesAttr cudaPackagesAttr;
 
       # Canonical Z3 provider for both native and Python build paths.
       #
@@ -273,6 +386,7 @@
           pyproject-nix
           pyproject-build-systems
           workspace
+          python3
           mirage-runtime
           mirage-rust-libs
           mirageZ3
@@ -811,11 +925,19 @@
       };
     };
   in {
-    packages = forAllSystems (s: mkCudaVariantOutputs mkFor "packages" s);
+    packages = forAllSystems (
+      s:
+        (mkVariantOutputs mkFor "packages" s)
+        // (mkReleaseMatrix s).packages
+    );
 
-    checks = forAllSystems (s: mkCudaVariantOutputs mkFor "checks" s);
+    checks = forAllSystems (s: mkVariantOutputs mkFor "checks" s);
 
-    apps = forAllSystems (s: mkCudaVariantOutputs mkFor "apps" s);
+    apps = forAllSystems (
+      s:
+        (mkVariantOutputs mkFor "apps" s)
+        // (mkReleaseMatrix s).apps
+    );
     devShells = forAllSystems (s: (mkFor {system = s;}).devShells);
     formatter = forAllSystems (
       system: let
