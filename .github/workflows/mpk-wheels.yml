@@ -1,0 +1,86 @@
+name: mpk-wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      mirage-ref:
+        description: "Mirage branch/ref to build against"
+        default: "mpk"
+        type: string
+      mirage-repo:
+        description: "Mirage repo (owner/name)"
+        default: "mirage-project/mirage"
+        type: string
+
+jobs:
+  matrix:
+    name: Compute wheel release matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      matrix: ${{ steps.release-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout flake repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix with flake config support
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
+
+      - name: Evaluate release matrix from flake
+        id: release-matrix
+        run: |
+          matrix_json="$(nix run ./mpk#release-matrix \
+            --override-input mirage-src "github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}")"
+          {
+            echo 'matrix<<EOF'
+            echo "$matrix_json"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.lane }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout flake repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix with flake config support
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
+
+      - name: Build repaired wheel output
+        run: >
+          nix build
+          ./mpk#${{ matrix.packages.wheelRepaired }}
+          --override-input mirage-src
+          github:${{ inputs.mirage-repo }}/${{ inputs.mirage-ref }}
+          -L
+
+      - name: Collect built wheel artifact
+        run: |
+          mkdir -p dist
+          cp result/*.whl "dist/"
+
+      - name: Upload repaired wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.lane }}-wheel
+          path: dist/*.whl
+          if-no-files-found: error
