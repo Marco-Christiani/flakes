@@ -40,7 +40,6 @@
   };
 
   outputs = {
-    self,
     nixpkgs,
     mirage-src,
     pyproject-nix,
@@ -152,6 +151,29 @@
         then "cu130"
         else "";
 
+      # Canonical Z3 provider for both native and Python build paths.
+      #
+      # TEMP(upstream): Mirage setup.py currently discovers Z3 through the
+      # imported Python package, while our native runtime derivation used to
+      # link against nixpkgs z3 directly. That split produced wheels with two
+      # different libz3 providers. Use the locked z3-solver wheel payload as
+      # the single source of truth until upstream offers a cleaner explicit
+      # native-linkage contract.
+      pythonBase = pkgs.callPackage pyproject-nix.build.packages {
+        python = python3;
+      };
+      lockParityOverlay = workspace.mkPyprojectOverlay {sourcePreference = "wheel";};
+      pythonSetPreMirage = pythonBase.overrideScope (
+        lib.composeManyExtensions [
+          pyproject-build-systems.overlays.default
+          lockParityOverlay
+        ]
+      );
+      mirageZ3 =
+        if builtins.hasAttr "z3-solver" pythonSetPreMirage
+        then pythonSetPreMirage."z3-solver"
+        else throw "mirage-project requires z3-solver from the lock-resolved Python package set";
+
       wheelPythonDeps = ps:
         [
           ps.build
@@ -159,11 +181,13 @@
           ps.setuptools
           ps.wheel
         ]
-        ++ (if builtins.hasAttr "z3-solver" ps
+        ++ (
+          if builtins.hasAttr "z3-solver" ps
           then [ps."z3-solver"]
           else if builtins.hasAttr "z3" ps
           then [ps.z3]
-          else []);
+          else []
+        );
 
       python310ForWheel =
         if pkgs ? python310
@@ -223,7 +247,7 @@
       };
 
       mirage-runtime = pkgs.callPackage ./nix/mirage-runtime.nix {
-        inherit gccHost cudaPackages mirage-rust-libs buildType;
+        inherit gccHost cudaPackages mirage-rust-libs buildType python3 mirageZ3;
         src = runtimeSrc;
       };
 
@@ -251,6 +275,7 @@
           workspace
           mirage-runtime
           mirage-rust-libs
+          mirageZ3
           cudaPackages
           gccHost
           ;
@@ -263,6 +288,11 @@
         ;
 
       miragePython = pythonSetBase.mirage-project;
+      mirageWheel = import ./nix/mirage-wheel.nix {
+        inherit lib pkgs python3 miragePython mirageZ3 cudaPackages;
+        mirageRuntime = mirage-runtime;
+        mirageRustLibs = mirage-rust-libs;
+      };
 
       # Runtime environment for end users (default dependency preset only).
       mirageEnv = pythonSet.mkVirtualEnv "mirage-env" workspace.deps.default;
@@ -305,7 +335,9 @@
         act -W .github/workflows/build-test.yml --reuse -j test
       '';
 
-      build-wheel = pkgs.writeShellScriptBin "build-wheel" ''
+      # Legacy container-based wheel builder retained for comparison and
+      # fallback while the Nix-native raw/repaired wheel pipeline settles.
+      legacy-build-wheel = pkgs.writeShellScriptBin "legacy-build-wheel" ''
         set -euo pipefail
 
         SRC="''${MIRAGE_SRC:-${toString mirage-src}}"
@@ -380,7 +412,7 @@
         exec bash "$SCRIPT" "''${final_args[@]}"
       '';
 
-      build-matrix = pkgs.writeShellScriptBin "build-matrix" ''
+      legacy-build-matrix = pkgs.writeShellScriptBin "legacy-build-matrix" ''
                 set -euo pipefail
 
                 SRC="''${MIRAGE_SRC:-${toString mirage-src}}"
@@ -389,7 +421,7 @@
 
                 usage() {
                   cat <<'EOF'
-        Usage: build-matrix [--src <path>] [--target <release|pr>] [--out <dir>]
+        Usage: legacy-build-matrix [--src <path>] [--target <release|pr>] [--out <dir>]
 
         Environment overrides:
           MIRAGE_SRC     Source checkout path
@@ -463,7 +495,7 @@
                   python_tag=''${tuple%% *}
                   cuda_tag=''${tuple##* }
                   echo "Building tuple python=$python_tag cuda=$cuda_tag"
-                  ${build-wheel}/bin/build-wheel --python "$python_tag" --out "$OUT_DIR"
+                  ${legacy-build-wheel}/bin/legacy-build-wheel --python "$python_tag" --out "$OUT_DIR"
                 done
       '';
     in {
@@ -472,9 +504,11 @@
         mirage-rust-libs-formal-verifier = mirage-rust-libs.formal_verifier;
         inherit mirage-runtime;
         mirage-python = miragePython;
+        mirage-python-wheel-raw = mirageWheel.rawWheel;
+        mirage-python-wheel-repaired = mirageWheel.auditwheelTools.repairedWheel;
+        mirage-python-wheel = mirageWheel.auditwheelTools.repairedWheel;
         mirage-env = mirageEnv;
         mirage-dev-env = mirageDevEnv;
-        inherit build-wheel build-matrix;
         default = miragePython;
       };
 
@@ -682,6 +716,9 @@
             print(json.dumps(report, indent=2, sort_keys=True))
             PY
           '';
+
+        wheel-auditwheel-show = mirageWheel.auditwheelTools.showReport;
+        wheel-repaired = mirageWheel.auditwheelTools.repairedWheel;
       };
 
       apps = {
@@ -690,14 +727,24 @@
           program = "${mirage-test}/bin/mirage-test";
         };
 
-        build-wheel = {
+        legacy-build-wheel = {
           type = "app";
-          program = "${build-wheel}/bin/build-wheel";
+          program = "${legacy-build-wheel}/bin/legacy-build-wheel";
         };
 
-        build-matrix = {
+        legacy-build-matrix = {
           type = "app";
-          program = "${build-matrix}/bin/build-matrix";
+          program = "${legacy-build-matrix}/bin/legacy-build-matrix";
+        };
+
+        auditwheel-show = {
+          type = "app";
+          program = "${mirageWheel.auditwheelTools.showApp}/bin/mirage-auditwheel-show";
+        };
+
+        repair-wheel = {
+          type = "app";
+          program = "${mirageWheel.auditwheelTools.repairWheelApp}/bin/mirage-repair-wheel";
         };
       };
 
@@ -712,7 +759,7 @@
           cudaPackages.cuda_cudart
           pkgs.rustc
           pkgs.cargo
-          pkgs.z3
+          mirageZ3
           mirageDevEnv
           pkgs.autoAddDriverRunpath
 
@@ -736,7 +783,7 @@
           CUDACXX = "${cudaPackages.cudatoolkit}/bin/nvcc";
           CC = "${gccHost}/bin/gcc";
           CXX = "${gccHost}/bin/g++";
-          Z3_LIBRARY_PATH = "${pkgs.z3.lib}/lib";
+          Z3_LIBRARY_PATH = "${mirageZ3}/${python3.sitePackages}/z3/lib";
           LIBRARY_PATH = "${cudaPackages.cudatoolkit}/lib/stubs";
         };
 

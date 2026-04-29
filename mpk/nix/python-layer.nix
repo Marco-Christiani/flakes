@@ -24,6 +24,7 @@ Python packaging policy for MPK
   # project-specific native artifacts injected into mirage-project build
   mirage-runtime,
   mirage-rust-libs,
+  mirageZ3,
   cudaPackages,
   gccHost,
 }: let
@@ -131,11 +132,10 @@ Python packaging policy for MPK
   # - crossWheelCudaLibs: provided by sibling CUDA wheels at final env runtime
   wheelCompatIgnore = driverProvidedLibs ++ crossWheelCudaLibs;
 
-  mkCudaWheelCompatOverride =
-    final: prev: nvidiaCudaWheelPackages: name: let
-      isCudaConsumer = builtins.elem name cudaConsumerPackages;
+  mkCudaWheelCompatOverride = final: prev: nvidiaCudaWheelPackages: name: let
+    isCudaConsumer = builtins.elem name cudaConsumerPackages;
 
-      nvidiaDeps = map (n: final.${n}) nvidiaCudaWheelPackages;
+    nvidiaDeps = map (n: final.${n}) nvidiaCudaWheelPackages;
 
     nvidiaSearchPathsScript = lib.optionalString isCudaConsumer (
       lib.concatMapStringsSep "\n" (
@@ -218,6 +218,9 @@ Python packaging policy for MPK
 
     # Inject pre-built native artifacts into the mirage-project build.
     mirage-project = prev.mirage-project.overrideAttrs (old: {
+      outputs = lib.unique ((old.outputs or ["out"]) ++ ["dist"]);
+      dontUsePyprojectInstallDistCheck = true;
+
       nativeBuildInputs =
         (old.nativeBuildInputs or [])
         ++ [
@@ -232,7 +235,7 @@ Python packaging policy for MPK
           mirage-runtime
           mirage-rust-libs.abstract_subexpr
           mirage-rust-libs.formal_verifier
-          pkgs.z3
+          mirageZ3
           cudaPackages.cudatoolkit
           cudaPackages.cuda_cudart
           gccHost
@@ -273,7 +276,6 @@ Python packaging policy for MPK
   );
 
   pythonSet = pythonSetBase.overrideScope cudaWheelCompatOverlay;
-
 in {
   inherit
     python3
