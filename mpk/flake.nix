@@ -17,7 +17,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     mirage-src = {
-      url = "path:/home/marco/Github/mirage";
+      url = "path:/home/marco/Github/mirage-ci-infra";
       flake = false;
     };
     pyproject-nix = {
@@ -50,6 +50,14 @@
     systems = ["x86_64-linux"];
 
     cudaVariants = [
+      {
+        name = "cuda12-1";
+        cudaPackagesAttr = "cudaPackages_12_1";
+      }
+      {
+        name = "cuda12-4";
+        cudaPackagesAttr = "cudaPackages_12_4";
+      }
       {
         name = "cuda12-6";
         cudaPackagesAttr = "cudaPackages_12_6";
@@ -100,7 +108,7 @@
           variantOutput =
             (mkFor {
               inherit system;
-              cudaPackagesAttr = variant.cudaPackagesAttr;
+              inherit (variant) cudaPackagesAttr;
             })
             .${
               outputKind
@@ -129,6 +137,40 @@
 
       cudaPackages = pkgs.${cudaPackagesAttr};
       gccHost = pkgs.${gccHostAttr};
+      expectedCudaTag =
+        if cudaPackagesAttr == "cudaPackages_12_1"
+        then "cu121"
+        else if cudaPackagesAttr == "cudaPackages_12_4"
+        then "cu124"
+        else if cudaPackagesAttr == "cudaPackages_12_6"
+        then "cu126"
+        else if cudaPackagesAttr == "cudaPackages_12_8"
+        then "cu128"
+        else if cudaPackagesAttr == "cudaPackages_12_9"
+        then "cu129"
+        else if cudaPackagesAttr == "cudaPackages_13_0"
+        then "cu130"
+        else "";
+
+      wheelPythonDeps = ps:
+        [
+          ps.build
+          ps.cython
+          ps.setuptools
+          ps.wheel
+        ]
+        ++ (if builtins.hasAttr "z3-solver" ps
+          then [ps."z3-solver"]
+          else if builtins.hasAttr "z3" ps
+          then [ps.z3]
+          else []);
+
+      python310ForWheel =
+        if pkgs ? python310
+        then (pkgs.python310.withPackages wheelPythonDeps)
+        else null;
+      python311ForWheel = pkgs.python311.withPackages wheelPythonDeps;
+      python312ForWheel = pkgs.python312.withPackages wheelPythonDeps;
 
       # -- Source filtering ------------------------------------------------
       #
@@ -262,6 +304,168 @@
         find . -type d -name build -prune -exec rm -rf {} \;
         act -W .github/workflows/build-test.yml --reuse -j test
       '';
+
+      build-wheel = pkgs.writeShellScriptBin "build-wheel" ''
+        set -euo pipefail
+
+        SRC="''${MIRAGE_SRC:-${toString mirage-src}}"
+        MATRIX="$SRC/infra/wheels/matrix.json"
+        SCRIPT="$SRC/infra/wheels/scripts/build-wheel.sh"
+        PYTHON_TAG=""
+        USER_CUDA_TAG=""
+        EXPECTED_CUDA_TAG="${expectedCudaTag}"
+
+        args=("$@")
+        for ((i=0; i<''${#args[@]}; i++)); do
+          if [[ "''${args[$i]}" == "--python" ]]; then
+            next=$((i + 1))
+            PYTHON_TAG="''${args[$next]:-}"
+          elif [[ "''${args[$i]}" == "--cuda" ]]; then
+            next=$((i + 1))
+            USER_CUDA_TAG="''${args[$next]:-}"
+          fi
+        done
+
+        if [[ -n "$EXPECTED_CUDA_TAG" && -n "$USER_CUDA_TAG" ]]; then
+          echo "Do not pass --cuda for this target; lane is fixed to $EXPECTED_CUDA_TAG" >&2
+          exit 2
+        fi
+
+        if [[ -z "''${MIRAGE_PYTHON_BIN:-}" && -n "$PYTHON_TAG" ]]; then
+          case "$PYTHON_TAG" in
+            cp310)
+              export MIRAGE_PYTHON_BIN="${
+          if python310ForWheel != null
+          then "${python310ForWheel}/bin/python3.10"
+          else ""
+        }"
+              ;;
+            cp311)
+              export MIRAGE_PYTHON_BIN="${python311ForWheel}/bin/python3.11"
+              ;;
+            cp312)
+              export MIRAGE_PYTHON_BIN="${python312ForWheel}/bin/python3.12"
+              ;;
+          esac
+
+          if [[ -z "$MIRAGE_PYTHON_BIN" ]]; then
+            echo "No Nix Python interpreter available for $PYTHON_TAG in this nixpkgs revision" >&2
+            exit 1
+          fi
+        fi
+
+        if [[ ! -f "$MATRIX" ]]; then
+          echo "Missing wheel matrix: $MATRIX" >&2
+          exit 1
+        fi
+        if [[ ! -f "$SCRIPT" ]]; then
+          echo "Missing wheel build script: $SCRIPT" >&2
+          exit 1
+        fi
+        if [[ ! -f "$SRC/pyproject.toml" && ! -f "$SRC/setup.py" ]]; then
+          echo "Source root does not look like a Python project: $SRC" >&2
+          exit 1
+        fi
+
+        export CUDA_HOME="${cudaPackages.cudatoolkit}"
+        export CUDACXX="${cudaPackages.cudatoolkit}/bin/nvcc"
+        export PATH="${cudaPackages.cudatoolkit}/bin:${pkgs.auditwheel}/bin:$PATH"
+
+        final_args=("$@")
+        if [[ -n "$EXPECTED_CUDA_TAG" ]]; then
+          final_args+=("--cuda" "$EXPECTED_CUDA_TAG")
+        fi
+
+        cd "$SRC"
+        exec bash "$SCRIPT" "''${final_args[@]}"
+      '';
+
+      build-matrix = pkgs.writeShellScriptBin "build-matrix" ''
+                set -euo pipefail
+
+                SRC="''${MIRAGE_SRC:-${toString mirage-src}}"
+                TARGET_SET="''${MATRIX_TARGET:-release}"
+                OUT_DIR="''${OUT_DIR:-$PWD/dist/wheels}"
+
+                usage() {
+                  cat <<'EOF'
+        Usage: build-matrix [--src <path>] [--target <release|pr>] [--out <dir>]
+
+        Environment overrides:
+          MIRAGE_SRC     Source checkout path
+          MATRIX_TARGET  Matrix target set (default: release)
+          OUT_DIR        Output wheel directory (default: ./dist/wheels)
+        EOF
+                }
+
+                while [[ $# -gt 0 ]]; do
+                  case "$1" in
+                    --src)
+                      SRC="''${2:-}"
+                      shift 2
+                      ;;
+                    --target)
+                      TARGET_SET="''${2:-}"
+                      shift 2
+                      ;;
+                    --out)
+                      OUT_DIR="''${2:-}"
+                      shift 2
+                      ;;
+                    -h|--help)
+                      usage
+                      exit 0
+                      ;;
+                    *)
+                      echo "Unknown argument: $1" >&2
+                      usage
+                      exit 2
+                      ;;
+                  esac
+                done
+
+                MATRIX="$SRC/infra/wheels/matrix.json"
+
+                if [[ ! -f "$MATRIX" ]]; then
+                  echo "Missing wheel matrix: $MATRIX" >&2
+                  exit 1
+                fi
+
+                mapfile -t tuples < <(
+                  ${pkgs.python3}/bin/python - "$MATRIX" "$TARGET_SET" "${expectedCudaTag}" <<'PY'
+        import json
+        import sys
+
+        matrix_path = sys.argv[1]
+        target_set = sys.argv[2]
+        expected_cuda = sys.argv[3]
+        with open(matrix_path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+
+        targets = payload.get("targets", {}).get(target_set, [])
+        if not targets:
+            raise SystemExit(f"No targets found for set '{target_set}'")
+
+        for target in targets:
+            if expected_cuda and target["cuda_tag"] != expected_cuda:
+                continue
+            print(f"{target['python']} {target['cuda_tag']}")
+        PY
+                )
+
+                if [[ ''${#tuples[@]} -eq 0 ]]; then
+                  echo "No matrix tuples matched target set '$TARGET_SET' for lane '${expectedCudaTag}'" >&2
+                  exit 1
+                fi
+
+                mkdir -p "$OUT_DIR"
+                for tuple in "''${tuples[@]}"; do
+                  python_tag=''${tuple%% *}
+                  cuda_tag=''${tuple##* }
+                  echo "Building tuple python=$python_tag cuda=$cuda_tag"
+                  ${build-wheel}/bin/build-wheel --python "$python_tag" --out "$OUT_DIR"
+                done
+      '';
     in {
       packages = {
         mirage-rust-libs-abstract-subexpr = mirage-rust-libs.abstract_subexpr;
@@ -270,6 +474,7 @@
         mirage-python = miragePython;
         mirage-env = mirageEnv;
         mirage-dev-env = mirageDevEnv;
+        inherit build-wheel build-matrix;
         default = miragePython;
       };
 
@@ -479,9 +684,21 @@
           '';
       };
 
-      apps.test = {
-        type = "app";
-        program = "${mirage-test}/bin/mirage-test";
+      apps = {
+        test = {
+          type = "app";
+          program = "${mirage-test}/bin/mirage-test";
+        };
+
+        build-wheel = {
+          type = "app";
+          program = "${build-wheel}/bin/build-wheel";
+        };
+
+        build-matrix = {
+          type = "app";
+          program = "${build-matrix}/bin/build-matrix";
+        };
       };
 
       devShells.default = pkgs.mkShell {
@@ -551,7 +768,7 @@
 
     checks = forAllSystems (s: mkCudaVariantOutputs mkFor "checks" s);
 
-    apps = forAllSystems (s: (mkFor {system = s;}).apps);
+    apps = forAllSystems (s: mkCudaVariantOutputs mkFor "apps" s);
     devShells = forAllSystems (s: (mkFor {system = s;}).devShells);
     formatter = forAllSystems (
       system: let

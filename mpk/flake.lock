@@ -3,13 +3,13 @@
     "mirage-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1772003255,
-        "narHash": "sha256-ClcjOfe3Um4+IzG1phNRN3PR2LBGusFJUarRHlARIVg=",
-        "path": "/home/marco/Github/mirage",
+        "lastModified": 1775780516,
+        "narHash": "sha256-mXpWhW4n1I1flD5zFuC68sPiPs67knaxby28dMDGFsY=",
+        "path": "/home/marco/Github/mirage-ci-infra",
         "type": "path"
       },
       "original": {
-        "path": "/home/marco/Github/mirage",
+        "path": "/home/marco/Github/mirage-ci-infra",
         "type": "path"
       }
     },
