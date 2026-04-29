@@ -139,31 +139,39 @@
         }) (builtins.attrNames attrs)
       );
 
-    variantSpecs =
-      (map (pythonVariant: {
-          nameParts = [pythonVariant.name];
-          args = {inherit (pythonVariant) pythonAttr;};
-        })
-        pythonVariants)
-      ++ (map (cudaVariant: {
-          nameParts = [cudaVariant.name];
-          args = {inherit (cudaVariant) cudaPackagesAttr;};
-        })
-        cudaVariants)
-      ++ builtins.concatMap
-      (pythonVariant:
-        map (cudaVariant: {
-          nameParts = [
-            pythonVariant.name
-            cudaVariant.name
-          ];
-          args = {
-            inherit (pythonVariant) pythonAttr;
-            inherit (cudaVariant) cudaPackagesAttr;
-          };
-        })
-        cudaVariants)
-      pythonVariants;
+    supportedPythonVariants = system: let
+      pkgs = import nixpkgs.outPath {inherit system;};
+    in
+      builtins.filter (pythonVariant: builtins.hasAttr pythonVariant.pythonAttr pkgs) pythonVariants;
+
+    variantSpecs = system:
+      let
+        supportedPythons = supportedPythonVariants system;
+      in
+        (map (pythonVariant: {
+            nameParts = [pythonVariant.name];
+            args = {inherit (pythonVariant) pythonAttr;};
+          })
+          supportedPythons)
+        ++ (map (cudaVariant: {
+            nameParts = [cudaVariant.name];
+            args = {inherit (cudaVariant) cudaPackagesAttr;};
+          })
+          cudaVariants)
+        ++ builtins.concatMap
+        (pythonVariant:
+          map (cudaVariant: {
+            nameParts = [
+              pythonVariant.name
+              cudaVariant.name
+            ];
+            args = {
+              inherit (pythonVariant) pythonAttr;
+              inherit (cudaVariant) cudaPackagesAttr;
+            };
+          })
+          cudaVariants)
+        supportedPythons;
 
     mkVariantOutputs = mkFor: outputKind: system: let
       defaultOutput = (mkFor {inherit system;}).${outputKind};
@@ -172,18 +180,16 @@
       (
         acc: variantSpec: let
           variantOutput =
-            (mkFor {
+            (mkFor ({
                 inherit system;
               }
-              // variantSpec.args)
-            .${
-              outputKind
-            };
+              // variantSpec.args))
+            .${outputKind};
         in
           acc // prefixAttrs (joinNameParts variantSpec.nameParts) variantOutput
       )
       defaultOutput
-      variantSpecs;
+      (variantSpecs system);
 
     releaseMatrixEntries =
       builtins.concatMap
@@ -219,7 +225,7 @@
           };
         })
         cudaVariants)
-      pythonVariants;
+      (supportedPythonVariants "x86_64-linux");
 
     mkReleaseMatrix = system: let
       pkgs = import nixpkgs {inherit system;};
