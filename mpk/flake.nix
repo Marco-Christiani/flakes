@@ -69,14 +69,6 @@
 
     cudaVariants = [
       {
-        name = "cuda12-1";
-        cudaPackagesAttr = "cudaPackages_12_1";
-      }
-      {
-        name = "cuda12-4";
-        cudaPackagesAttr = "cudaPackages_12_4";
-      }
-      {
         name = "cuda12-6";
         cudaPackagesAttr = "cudaPackages_12_6";
       }
